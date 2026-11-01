@@ -138,7 +138,7 @@ func splitTarget(t string) (parent, name string) {
 
 func defaultConfig() ProjectConfig {
 	return ProjectConfig{
-		Port: 8080,
+		Port: 8013,
 		Roots: []RootMapping{
 			{Dir: "client", Target: "StarterPlayer.StarterPlayerScripts"},
 			{Dir: "server", Target: "ServerScriptService"},

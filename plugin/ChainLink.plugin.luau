@@ -11,7 +11,7 @@ local ATTR = "ChainLinkPath"
 local SETTING_URL = "ChainLink_Url"
 local SETTING_TOKEN = "ChainLink_Token"
 local SETTING_LOGS = "ChainLink_ShowLogs"
-local DEFAULT_URL = "http://localhost:8080"
+local DEFAULT_URL = "http://localhost:8013"
 
 -- ---------- State ----------
 
