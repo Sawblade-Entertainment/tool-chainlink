@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -13,8 +15,8 @@ var wallyRegistryAPI = "https://api.wally.run/v1/package-contents"
 
 // InstallPackageList installs a list of wally packages from a map where keys are aliases and values are package names (e.g., "vibeonline/razorinput@0.1.0")
 func InstallPackageList(packages map[string]string) error {
-	for alias, packageName := range packages {
-		fmt.Printf("Installing %s...\n", packageName)
+	for _, alias := range slices.Sorted(maps.Keys(packages)) {
+		packageName := packages[alias]
 		if err := InstallPackage(alias, packageName); err != nil {
 			return fmt.Errorf("failed to install package %s: %w", packageName, err)
 		}
@@ -38,6 +40,12 @@ func parsePackageSpec(packageName string) (scope, name, version string, err erro
 	return scopeParts[0], scopeParts[1], parts[1], nil
 }
 
+// packageInstallDir is the global dir for a package version:
+// ~/.chainlink/packages/<scope>_<name>/<version>.
+func packageInstallDir(home, scope, name, version string) string {
+	return filepath.Join(home, ".chainlink", "packages", scope+"_"+name, version)
+}
+
 // InstallPackage installs a wally package by its name (e.g., "vibeonline/razorinput@0.1.0")
 // It downloads the package zip directly from the Wally registry and extracts it.
 func InstallPackage(alias, packageName string) error {
@@ -51,18 +59,17 @@ func InstallPackage(alias, packageName string) error {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	// Global package directory: ~/.chainlink/packages/scope_name/version
 	// Checked before any network I/O so re-installs cost nothing.
-	globalPkgDir := filepath.Join(home, ".chainlink", "packages", scope+"_"+name, version)
+	globalPkgDir := packageInstallDir(home, scope, name, version)
 	if _, err := os.Stat(globalPkgDir); err == nil {
-		fmt.Printf("Package %s/%s version %s is already installed globally. Skipping.\n", scope, name, version)
+		status("Cached", sgrBlue, "%s", packageName)
 		return nil
 	}
 
 	// Construct the registry URL
 	url := fmt.Sprintf("%s/%s/%s/%s", wallyRegistryAPI, scope, name, version)
 
-	fmt.Printf("Downloading package %s from %s...\n", packageName, url)
+	status("Downloading", sgrCyan, "%s", packageName)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -97,6 +104,6 @@ func InstallPackage(alias, packageName string) error {
 		return err
 	}
 
-	fmt.Printf("Successfully installed %s globally to %s\n", packageName, globalPkgDir)
+	status("Installed", sgrGreen, "%s %s", packageName, dim(globalPkgDir))
 	return nil
 }

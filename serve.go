@@ -160,7 +160,7 @@ func loadConfig() ProjectConfig {
 	if data, err := os.ReadFile(configFileName); err == nil {
 		var file ProjectConfig
 		if err := json.Unmarshal(data, &file); err != nil {
-			log.Printf("Warning: %s is invalid: %v", configFileName, err)
+			log.Printf("%s %s is invalid: %v", logWarn(), configFileName, err)
 		} else {
 			if file.Port != 0 {
 				cfg.Port = file.Port
@@ -190,7 +190,7 @@ func loadConfig() ProjectConfig {
 			})
 		}
 	} else if !os.IsNotExist(err) {
-		log.Printf("Warning: %s could not be parsed: %v", chainTomlName, err)
+		log.Printf("%s %s could not be parsed: %v", logWarn(), chainTomlName, err)
 	}
 
 	// Resolve src/root and dedupe.
@@ -425,7 +425,7 @@ func (s *Server) claim(ev Event) bool {
 	defer s.mu.Unlock()
 	if owner, ok := s.owners[key]; ok && owner != ev.Path {
 		if _, err := os.Stat(s.absPath(owner)); err == nil {
-			log.Printf("Warning: %s and %s both map to %s.%s; ignoring %s",
+			log.Printf("%s %s and %s both map to %s.%s; ignoring %s", logWarn(),
 				owner, ev.Path, ev.Target, strings.Join(ev.InstancePath, "."), ev.Path)
 			return false
 		}
@@ -514,7 +514,7 @@ func (s *Server) fileEvent(rel string, op string) (Event, bool) {
 	c := classify(cfg, rel, false)
 	if !c.Syncable {
 		if op != "DELETE" && isShadowedRootInit(cfg, rel) {
-			log.Printf("Warning: %s is ignored because the embedded bootstrap is enabled (set disable_bootstrap = true in %s to use it)", rel, chainTomlName)
+			log.Printf("%s %s is ignored because the embedded bootstrap is enabled (set disable_bootstrap = true in %s to use it)", logWarn(), rel, chainTomlName)
 		}
 		return Event{}, false
 	}
@@ -602,7 +602,7 @@ func (s *Server) removeDir(rel string, children []string, childIsDir map[string]
 		evs := []Event{{Op: "DELETE", Path: rel, Target: c.Target, InstancePath: c.InstancePath}}
 		evs = append(evs, s.promoteShadowed(rel, relParent(rel), c.Target, c.InstancePath)...)
 		s.queue.Push(evs...)
-		log.Printf("[DELETE] %s/", rel)
+		log.Printf("%s %s/", logTag("DELETE"), rel)
 		return
 	}
 
@@ -632,7 +632,7 @@ func (s *Server) removeDir(rel string, children []string, childIsDir map[string]
 		}
 	}
 	s.queue.Push(evs...)
-	log.Printf("[UNMERGE] %s/ removed from %s (%d children)", rel, owner, len(evs))
+	log.Printf("%s %s/ removed from %s (%d children)", logTag("UNMERGE"), rel, owner, len(evs))
 }
 
 // relParent returns the parent of a slash-separated rel path ("" at the top).
@@ -675,7 +675,7 @@ func (s *Server) promoteShadowed(gone, instDir, target string, instPath []string
 			s.mu.Lock()
 			s.known[r] = false
 			s.mu.Unlock()
-			log.Printf("[PROMOTE] %s now owns %s.%s", r, target, strings.Join(instPath, "."))
+			log.Printf("%s %s now owns %s.%s", logTag("PROMOTE"), r, target, strings.Join(instPath, "."))
 			return []Event{ev}
 		}
 	}
@@ -835,7 +835,7 @@ func bootstrapEvents(cfg ProjectConfig) []Event {
 		bs := bootstrapScripts[r.Dir]
 		data, err := bootstrapFS.ReadFile(bs.File)
 		if err != nil {
-			log.Printf("Warning: could not read embedded bootstrap file %s: %v", bs.File, err)
+			log.Printf("%s could not read embedded bootstrap file %s: %v", logWarn(), bs.File, err)
 			continue
 		}
 		out = append(out, Event{
@@ -932,7 +932,7 @@ func (s *Server) resolveLocked(rel string) {
 			instDir = relParent(instDir)
 		}
 		s.queue.Push(append([]Event{ev}, s.promoteShadowed(rel, instDir, ev.Target, ev.InstancePath)...)...)
-		log.Printf("[DELETE] %s", rel)
+		log.Printf("%s %s", logTag("DELETE"), rel)
 		return
 	}
 
@@ -983,7 +983,7 @@ func (s *Server) resolveLocked(rel string) {
 	s.known[rel] = false
 	s.mu.Unlock()
 	s.queue.Push(ev)
-	log.Printf("[%s] %s -> %s.%s (%s)", op, rel, ev.Target, strings.Join(ev.InstancePath, "."), ev.ClassName)
+	log.Printf("%s %s -> %s.%s (%s)", logTag(op), rel, ev.Target, strings.Join(ev.InstancePath, "."), ev.ClassName)
 }
 
 // forget drops known entries and watches for a package root.
@@ -1016,7 +1016,7 @@ func (s *Server) forget(rootRel string) {
 func (s *Server) watchPackageAncestors(cfg ProjectConfig) {
 	base := packagesBase()
 	if err := os.MkdirAll(base, 0o755); err != nil {
-		log.Printf("Warning: could not create %s: %v", base, err)
+		log.Printf("%s could not create %s: %v", logWarn(), base, err)
 	}
 	s.watch(base)
 	for _, p := range cfg.Packages {
@@ -1040,7 +1040,7 @@ func (s *Server) watch(abs string) error {
 	err := s.watcher.Add(abs)
 	if err != nil {
 		if _, logged := s.watchFailed.LoadOrStore(abs, struct{}{}); !logged {
-			log.Printf("Warning: cannot watch %s: %v (changes there won't sync; %s)", abs, err, watchLimitHint())
+			log.Printf("%s cannot watch %s: %v (changes there won't sync; %s)", logWarn(), abs, err, watchLimitHint())
 		}
 	}
 	return err
@@ -1060,7 +1060,7 @@ func watchLimitHint() string {
 // logWalkErr reports walk failures other than paths vanishing mid-walk.
 func logWalkErr(p string, err error) {
 	if !os.IsNotExist(err) {
-		log.Printf("Warning: cannot read %s: %v", p, err)
+		log.Printf("%s cannot read %s: %v", logWarn(), p, err)
 	}
 }
 
@@ -1104,7 +1104,7 @@ func (s *Server) reloadPackages() {
 		c := classify(oldCfg, rel, true)
 		events = append(events, Event{Op: "DELETE", Path: rel, Target: c.Target, InstancePath: c.InstancePath})
 		s.forget(rel)
-		log.Printf("[PKG REMOVE] %s -> %s", p.PackageName, p.Target)
+		log.Printf("%s %s -> %s", logTag("PKG REMOVE"), p.PackageName, p.Target)
 	}
 
 	for _, p := range newActive {
@@ -1114,7 +1114,7 @@ func (s *Server) reloadPackages() {
 		s.primeDir(s.absPath(pkgPrefix + p.PackageName))
 		evs := s.packageEvents(p)
 		events = append(events, evs...)
-		log.Printf("[PKG ADD] %s -> %s (%d events)", p.PackageName, p.Target, len(evs))
+		log.Printf("%s %s -> %s (%d events)", logTag("PKG ADD"), p.PackageName, p.Target, len(evs))
 	}
 
 	if oldCfg.DisableBootstrap != newCfg.DisableBootstrap {
@@ -1152,7 +1152,7 @@ func (s *Server) bootstrapToggleEvents(oldCfg ProjectConfig) []Event {
 	if newCfg.DisableBootstrap {
 		state = "disabled"
 	}
-	log.Printf("[BOOTSTRAP] %s, re-synced server/ and client/", state)
+	log.Printf("%s %s, re-synced server/ and client/", logTag("BOOTSTRAP"), state)
 	return append(dels, creates...)
 }
 
@@ -1187,7 +1187,7 @@ func (s *Server) watchLoop() {
 			if !ok {
 				return
 			}
-			log.Printf("Watcher error: %v", err)
+			log.Printf("%s watcher error: %v", logWarn(), err)
 		}
 	}
 }
@@ -1340,7 +1340,7 @@ func serve() error {
 
 	for _, r := range cfg.Roots {
 		if !dirExists(filepath.Join(root, r.Dir)) {
-			log.Printf("Warning: directory %s/ not found. It will be ignored until created.", r.Dir)
+			log.Printf("%s directory %s/ not found. It will be ignored until created.", logWarn(), r.Dir)
 		}
 	}
 
@@ -1373,7 +1373,7 @@ func serve() error {
 	mux.HandleFunc("/changes", s.auth(s.handleChanges))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
-	log.Printf("Listening on http://%s  (session %s)", addr, s.queue.sessionID)
+	log.Printf("%s on %s %s", paint(colorStderr, "Listening", sgrBold, sgrGreen), paint(colorStderr, "http://"+addr, sgrBold, sgrCyan), paint(colorStderr, "(session "+s.queue.sessionID+")", sgrDim))
 	for _, r := range cfg.Roots {
 		log.Printf("  %-8s -> %s", r.Dir+"/", r.Target)
 	}

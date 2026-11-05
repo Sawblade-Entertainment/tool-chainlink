@@ -98,7 +98,7 @@ func installPlugin() error {
 	// If an old binary version exists, remove it to avoid confusion
 	_ = os.Remove(filepath.Join(pluginsDir, "ChainLink.rbxm"))
 
-	fmt.Printf("Successfully installed ChainLink plugin to %s\n", destPath)
+	status("Installed", sgrGreen, "Studio plugin %s", dim(destPath))
 	return nil
 }
 

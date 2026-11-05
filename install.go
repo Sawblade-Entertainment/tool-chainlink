@@ -21,33 +21,33 @@ func InstallChainlink() error {
 		return fmt.Errorf("failed to create bin directory: %w", err)
 	}
 
-	fmt.Println("Chainlink environment initialized.")
-	fmt.Printf("Bin directory created at: %s\n", binDir)
+	status("Created", sgrGreen, "bin directory %s", dim(binDir))
 
 	shellConfig, err := shellConfigFor(runtime.GOOS, os.Getenv("SHELL"), home)
 	if err != nil {
 		return err
 	}
 	if shellConfig == "" {
-		fmt.Println("\nTo add Chainlink to your PATH on Windows:")
-		fmt.Printf("1. Search for 'Edit the system environment variables'\n")
-		fmt.Printf("2. Click 'Environment Variables'\n")
-		fmt.Printf("3. Under 'User variables', find PATH and click 'Edit'\n")
-		fmt.Printf("4. Add a new entry: %s\n", binDir)
+		fmt.Println()
+		fmt.Println(bold("To add ChainLink to your PATH on Windows:"))
+		fmt.Println("  1. Search for 'Edit the system environment variables'")
+		fmt.Println("  2. Click 'Environment Variables'")
+		fmt.Println("  3. Under 'User variables', find PATH and click 'Edit'")
+		fmt.Printf("  4. Add a new entry: %s\n", cyan(binDir))
 		return nil
 	}
 
 	// Check if already in PATH
 	if pathListContains(os.Getenv("PATH"), binDir) {
-		fmt.Printf("\n%s is already in your PATH. Skipping PATH update.\n", binDir)
+		status("Skipping", sgrBlue, "PATH update %s", dim("(already on PATH)"))
 		return nil
 	}
 
 	// The PATH of this process is stale until the shell restarts, so also check
 	// the rc file to avoid appending the same line on every run.
 	if data, err := os.ReadFile(shellConfig); err == nil && mentionsDir(string(data), binDir) {
-		fmt.Printf("\n%s already adds %s to your PATH.\n", shellConfig, binDir)
-		fmt.Println("Please restart your terminal or run: source " + shellConfig)
+		status("Skipping", sgrBlue, "PATH update %s", dim("("+shellConfig+" already adds it)"))
+		hintf("Restart your terminal or run: source %s", shellConfig)
 		return nil
 	}
 
@@ -66,8 +66,8 @@ func InstallChainlink() error {
 		return fmt.Errorf("failed to write to shell config: %w", err)
 	}
 
-	fmt.Printf("\nAdded %s to %s\n", binDir, shellConfig)
-	fmt.Println("Please restart your terminal or run: source " + shellConfig)
+	status("Updated", sgrGreen, "%s %s", shellConfig, dim("(added "+binDir+" to PATH)"))
+	hintf("Restart your terminal or run: source %s", shellConfig)
 
 	return nil
 }

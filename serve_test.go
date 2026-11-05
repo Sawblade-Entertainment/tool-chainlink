@@ -842,18 +842,22 @@ func TestScheduleDebounces(t *testing.T) {
 	}
 	deadline := time.After(2 * time.Second)
 	for {
-		evs, _, _ := s.queue.Since(0)
-		if len(evs) > 0 {
-			if len(evs) != 1 || evs[0].Op != "CREATE" {
-				t.Fatalf("events: %s", serveDescribe(evs))
-			}
-			return
+		// Take Notify before Since, as handleChanges does, so a push in between
+		// can't be missed.
+		ch := s.queue.Notify()
+		if evs, _, _ := s.queue.Since(0); len(evs) > 0 {
+			break
 		}
 		select {
-		case <-s.queue.Notify():
+		case <-ch:
 		case <-deadline:
 			t.Fatal("debounced resolve never ran")
 		}
+	}
+	// Without debouncing, the remaining schedules would push UPDATEs later.
+	time.Sleep(3 * debounceWindow)
+	if evs, _, _ := s.queue.Since(0); len(evs) != 1 || evs[0].Op != "CREATE" {
+		t.Fatalf("events: %s", serveDescribe(evs))
 	}
 }
 

@@ -27,10 +27,10 @@ go build -o chainlink .
 
 ## Global Installation
 
-Once you have the `chainlink` binary, you can use the built-in `global` command to set up the tool permanently on your system:
+Once you have the `chainlink` binary, you can use the built-in `self-install` command to set up the tool permanently on your system:
 
 ```bash
-./chainlink global
+./chainlink self-install
 ```
 
 This command will:

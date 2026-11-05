@@ -946,30 +946,6 @@ func TestInstallBinary(t *testing.T) {
 	}
 }
 
-func TestParseToolSpec(t *testing.T) {
-	tests := []struct {
-		in              string
-		repo, name, tag string
-		wantErr         bool
-	}{
-		{"a/b@1.0", "a/b", "b", "1.0", false},
-		{"b@1.0", "b", "b", "1.0", false},
-		{"Kampfkarren/selene@0.27.1", "Kampfkarren/selene", "selene", "0.27.1", false},
-		{"a/b", "", "", "", true},
-		{"a/b@1@2", "", "", "", true},
-		{"a/b@", "", "", "", true},
-		{"@1.0", "", "", "", true},
-		{"a/@1.0", "", "", "", true},
-		{"", "", "", "", true},
-	}
-	for _, tt := range tests {
-		repo, name, tag, err := parseToolSpec(tt.in)
-		if (err != nil) != tt.wantErr || repo != tt.repo || name != tt.name || tag != tt.tag {
-			t.Errorf("parseToolSpec(%q) = %q, %q, %q, %v", tt.in, repo, name, tag, err)
-		}
-	}
-}
-
 func TestClassifyInvocation(t *testing.T) {
 	tests := []struct {
 		arg0 string
@@ -1047,7 +1023,7 @@ func TestProxyToToolErrors(t *testing.T) {
 
 	cliWriteFile(t, "chain.toml", "[Tools]\nselene = \"Kampfkarren/selene\"\n", 0644)
 	err = proxyToTool("selene", nil)
-	if err == nil || errors.Is(err, errToolNotDefined) || !strings.Contains(err.Error(), "invalid tool spec") {
+	if err == nil || errors.Is(err, errToolNotDefined) || !strings.Contains(err.Error(), "invalid tool format") {
 		t.Fatalf("bad spec err = %v", err)
 	}
 
@@ -1063,7 +1039,7 @@ func cliMakeExec(t testing.TB, path string) {
 	cliWriteFile(t, path, "#!/bin/sh\nexit 0\n", 0755)
 }
 
-func TestFindToolBinary(t *testing.T) {
+func TestFindToolBinarySkipsDocs(t *testing.T) {
 	exe := ""
 	if runtime.GOOS == "windows" {
 		exe = ".exe"
@@ -1074,7 +1050,7 @@ func TestFindToolBinary(t *testing.T) {
 		cliMakeExec(t, filepath.Join(dir, "LICENSE"))
 		cliMakeExec(t, filepath.Join(dir, "README"))
 		cliMakeExec(t, filepath.Join(dir, "selene"+exe))
-		got, err := findToolBinary(dir, "selene")
+		got, err := findToolBinary(dir, "selene", runtime.GOOS)
 		if err != nil || got != filepath.Join(dir, "selene"+exe) {
 			t.Fatalf("got %q, %v", got, err)
 		}
@@ -1083,7 +1059,7 @@ func TestFindToolBinary(t *testing.T) {
 		dir := t.TempDir()
 		cliMakeExec(t, filepath.Join(dir, "CHANGELOG"))
 		cliMakeExec(t, filepath.Join(dir, "stylua-macos", "stylua"+exe))
-		got, err := findToolBinary(dir, "StyLua")
+		got, err := findToolBinary(dir, "StyLua", runtime.GOOS)
 		if err != nil || got != filepath.Join(dir, "stylua-macos", "stylua"+exe) {
 			t.Fatalf("got %q, %v", got, err)
 		}
@@ -1092,7 +1068,7 @@ func TestFindToolBinary(t *testing.T) {
 		dir := t.TempDir()
 		cliMakeExec(t, filepath.Join(dir, "LICENSE-MIT"))
 		cliMakeExec(t, filepath.Join(dir, "rojo-cli"+exe))
-		got, err := findToolBinary(dir, "rojo")
+		got, err := findToolBinary(dir, "rojo", runtime.GOOS)
 		if err != nil || got != filepath.Join(dir, "rojo-cli"+exe) {
 			t.Fatalf("got %q, %v", got, err)
 		}
@@ -1101,17 +1077,17 @@ func TestFindToolBinary(t *testing.T) {
 		dir := t.TempDir()
 		cliMakeExec(t, filepath.Join(dir, "LICENSE"))
 		cliWriteFile(t, filepath.Join(dir, "notes.md"), "x", 0644)
-		if _, err := findToolBinary(dir, "selene"); !errors.Is(err, errToolBinaryNotFound) {
+		if _, err := findToolBinary(dir, "selene", runtime.GOOS); !errors.Is(err, errToolBinaryNotFound) {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("empty dir", func(t *testing.T) {
-		if _, err := findToolBinary(t.TempDir(), "selene"); !errors.Is(err, errToolBinaryNotFound) {
+		if _, err := findToolBinary(t.TempDir(), "selene", runtime.GOOS); !errors.Is(err, errToolBinaryNotFound) {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("missing dir", func(t *testing.T) {
-		if _, err := findToolBinary(filepath.Join(t.TempDir(), "nope"), "selene"); !errors.Is(err, fs.ErrNotExist) {
+		if _, err := findToolBinary(filepath.Join(t.TempDir(), "nope"), "selene", runtime.GOOS); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -1119,39 +1095,10 @@ func TestFindToolBinary(t *testing.T) {
 		t.Run("non-executable name match ignored", func(t *testing.T) {
 			dir := t.TempDir()
 			cliWriteFile(t, filepath.Join(dir, "selene"), "x", 0644)
-			if _, err := findToolBinary(dir, "selene"); !errors.Is(err, errToolBinaryNotFound) {
+			if _, err := findToolBinary(dir, "selene", runtime.GOOS); !errors.Is(err, errToolBinaryNotFound) {
 				t.Fatalf("err = %v", err)
 			}
 		})
-	}
-}
-
-func TestLocateToolBinary(t *testing.T) {
-	root := t.TempDir()
-	// Only the v-prefixed dir exists (InstallTool retried with 'v' after a 404).
-	cliMakeExec(t, filepath.Join(root, "v0.20.0", "stylua"))
-	if runtime.GOOS == "windows" {
-		cliMakeExec(t, filepath.Join(root, "v0.20.0", "stylua.exe"))
-	}
-	got, err := locateToolBinary(root, "StyLua", "0.20.0")
-	if err != nil || filepath.Dir(got) != filepath.Join(root, "v0.20.0") {
-		t.Fatalf("got %q, %v", got, err)
-	}
-
-	// An empty plain-tag dir (interrupted install) must not hide the v-dir.
-	if err := os.MkdirAll(filepath.Join(root, "0.20.0"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	got, err = locateToolBinary(root, "StyLua", "0.20.0")
-	if err != nil || filepath.Dir(got) != filepath.Join(root, "v0.20.0") {
-		t.Fatalf("got %q, %v", got, err)
-	}
-
-	if _, err := locateToolBinary(root, "StyLua", "v9.9.9"); !errors.Is(err, errToolBinaryNotFound) {
-		t.Fatalf("err = %v", err)
-	}
-	if fmt.Sprint(toolTagDirs("v1")) != "[v1]" || fmt.Sprint(toolTagDirs("1")) != "[1 v1]" {
-		t.Fatalf("toolTagDirs = %v / %v", toolTagDirs("v1"), toolTagDirs("1"))
 	}
 }
 
@@ -1228,8 +1175,41 @@ func BenchmarkFindToolBinary(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := findToolBinary(dir, "selene"); err != nil {
+		if _, err := findToolBinary(dir, "selene", runtime.GOOS); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestSourcemapOutput(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{nil, ""},
+		{[]string{"-o", "sourcemap.json"}, "sourcemap.json"},
+		{[]string{"chain.toml", "--output", "out.json", "--include-non-scripts"}, "out.json"},
+		{[]string{"--watch", "--output=a b.json"}, "a b.json"},
+		{[]string{"-o"}, ""},
+	}
+	for _, tt := range tests {
+		if got := sourcemapOutput(tt.args); got != tt.want {
+			t.Errorf("sourcemapOutput(%q) = %q, want %q", tt.args, got, tt.want)
+		}
+	}
+}
+
+// Regression: a tag from chain.toml must never resolve outside ~/.chainlink/tools.
+func TestRunToolBySpecRejectsTraversal(t *testing.T) {
+	home := cliSetHome(t)
+	keep := filepath.Join(home, "keep.txt")
+	cliWriteFile(t, keep, "x", 0644)
+	for _, spec := range []string{"x/x@../../..", "x/x@..", "x/x@a/b", `x/x@a\b`, "../x@1.0"} {
+		if err := runToolBySpec(spec, nil); err == nil {
+			t.Errorf("runToolBySpec(%q) succeeded", spec)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("file outside tools dir was touched: %v", err)
 	}
 }

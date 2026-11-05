@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,8 +70,8 @@ func SetupProjectBin(tools map[string]string) error {
 
 // InstallToolList installs multiple tools from a map.
 func InstallToolList(tools map[string]string) error {
-	for name, spec := range tools {
-		fmt.Printf("Installing tool %s: %s\n", name, spec)
+	for _, name := range slices.Sorted(maps.Keys(tools)) {
+		spec := tools[name]
 		if err := InstallTool(name, spec); err != nil {
 			return fmt.Errorf("failed to install tool %s (%s): %w", name, spec, err)
 		}
@@ -155,9 +157,9 @@ func InstallToolDir(toolName, spec string) (string, error) {
 
 	// Check if the tool is already installed (as-is or with 'v' prefix)
 	if dir, ok := toolInstallDir(home, s.Name, s.Tag); ok {
-		fmt.Printf("Tool %s version %s is already installed. Skipping.\n", toolName, s.Tag)
+		status("Cached", sgrBlue, "%s", spec)
 		if err := linkTool(home, toolName); err != nil {
-			fmt.Printf("Warning: %v\n", err)
+			warnf("%v", err)
 		}
 		return dir, nil
 	}
@@ -187,21 +189,21 @@ func InstallToolDir(toolName, spec string) (string, error) {
 	if err != nil || destPath == staging {
 		return "", fmt.Errorf("invalid asset name %q", asset.Name)
 	}
-	fmt.Printf("Downloading %s...\n", asset.Name)
+	status("Downloading", sgrCyan, "%s %s", spec, dim(asset.Name))
 	if err := downloadFile(asset.BrowserDownloadURL, destPath); err != nil {
 		return "", fmt.Errorf("failed to download asset: %w", err)
 	}
 
 	contents := filepath.Join(staging, "contents")
+	if err := os.MkdirAll(contents, 0755); err != nil {
+		return "", err
+	}
 	extracted, err := extractArchive(destPath, contents)
 	if err != nil {
 		return "", fmt.Errorf("failed to extract %s: %w", asset.Name, err)
 	}
 	if !extracted {
 		// A raw binary: name it after the tool so it is easy to find.
-		if err := os.MkdirAll(contents, 0755); err != nil {
-			return "", err
-		}
 		binName := s.Name
 		if runtime.GOOS == "windows" {
 			binName += ".exe"
@@ -223,7 +225,7 @@ func InstallToolDir(toolName, spec string) (string, error) {
 	if err := moveIntoPlace(contents, binDir); err != nil {
 		return "", err
 	}
-	fmt.Printf("Installed %s to %s\n", s.Repo, binDir)
+	status("Installed", sgrGreen, "%s %s", spec, dim(binDir))
 
 	return binDir, linkTool(home, toolName)
 }
@@ -629,7 +631,12 @@ func hasBinaryMagic(path string) bool {
 	}
 	defer f.Close()
 	var head [4]byte
-	if _, err := io.ReadFull(f, head[:]); err != nil {
+	n, _ := io.ReadFull(f, head[:])
+	// Shebang scripts are tools too (the old extension rule made them executable).
+	if n >= 2 && head[0] == '#' && head[1] == '!' {
+		return true
+	}
+	if n < len(head) {
 		return false
 	}
 	for _, m := range binaryMagics {
@@ -699,7 +706,7 @@ func findToolBinary(dir, toolName, goos string) (string, error) {
 			match = p
 			return filepath.SkipAll
 		}
-		if first == "" {
+		if first == "" && !isDocFile(base) {
 			first = p
 		}
 		return nil
@@ -713,7 +720,21 @@ func findToolBinary(dir, toolName, goos string) (string, error) {
 	if first != "" {
 		return first, nil
 	}
-	return "", fmt.Errorf("no executable for %s found in %s", toolName, dir)
+	return "", fmt.Errorf("%w: no executable for %s in %s", errToolBinaryNotFound, toolName, dir)
+}
+
+var errToolBinaryNotFound = errors.New("tool binary not found")
+
+// isDocFile reports names that release archives ship next to the binary, which
+// may carry an exec bit from the archive but are never the tool.
+func isDocFile(name string) bool {
+	lower := strings.ToLower(name)
+	for _, doc := range []string{"license", "licence", "readme", "changelog", "copying", "notice", "authors", "contributors"} {
+		if strings.HasPrefix(lower, doc) {
+			return true
+		}
+	}
+	return false
 }
 
 // downloadFile saves url to dest, removing dest if anything fails.

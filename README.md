@@ -24,7 +24,9 @@ ChainLink uses a `chain.toml` file in your project root to track dependencies.
 chainlink init
 
 # Install all tools and packages defined in chain.toml
+# (asks before downloading anything new; -y skips the prompt)
 chainlink install
+chainlink install -y
 
 # Install the ChainLink plugin for Roblox Studio
 chainlink plugin
@@ -40,14 +42,11 @@ chainlink add scope/name@version --package
 # Remove a tool or package
 chainlink remove name
 
-# Run a tool by its specification directly
-chainlink run owner/repo@tag [args]
-
 # Start the ChainLink server
 chainlink serve
 
 # Install ChainLink globally to your system
-chainlink global
+chainlink self-install
 
 # Authenticate with a registry to publish packages
 chainlink login

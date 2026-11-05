@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -107,15 +109,13 @@ func main() {
 	case invokeGlobalInstall:
 		// A release binary being run for the first time: default to global installation.
 		if err := handleGlobal(); err != nil {
-			fmt.Printf("Error installing globally: %v\n", err)
-			os.Exit(1)
+			fail("installing globally", err)
 		}
 		return
 	case invokeToolProxy:
 		// If the tool ran but returned an exit code, runToolBySpec already exited with it.
 		if err := proxyToTool(invokedAs, os.Args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			os.Exit(1)
+			fail("", err)
 		}
 		return
 	}
@@ -127,107 +127,113 @@ func main() {
 
 	cmd := os.Args[1]
 	switch cmd {
-	case "help":
+	case "help", "-h", "--help":
 		printUsage()
 	case "init":
 		if err := handleInit(); err != nil {
-			fmt.Printf("Error initializing: %v\n", err)
-			os.Exit(1)
+			fail("initializing", err)
 		}
 	case "add":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: chainlink add <spec> [--tool]")
-			os.Exit(1)
+			usageFail("chainlink add <spec> [--tool | --package]")
 		}
 		if err := handleAdd(os.Args[2:]); err != nil {
-			fmt.Printf("Error adding: %v\n", err)
-			os.Exit(1)
+			fail("adding", err)
 		}
 	case "remove":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: chainlink remove <name>")
-			os.Exit(1)
+			usageFail("chainlink remove <name>")
 		}
 		if err := handleRemove(os.Args[2]); err != nil {
-			fmt.Printf("Error removing: %v\n", err)
-			os.Exit(1)
+			fail("removing", err)
 		}
 	case "install":
-		if len(os.Args) > 2 {
-			fmt.Println("Error: 'chainlink install' does not take arguments.")
-			os.Exit(1)
+		assumeYes, err := parseInstallArgs(os.Args[2:])
+		if err != nil {
+			fail("install", err)
 		}
-		if err := installAll(); err != nil {
-			fmt.Printf("Error installing: %v\n", err)
-			os.Exit(1)
+		if err := installAll(assumeYes); err != nil {
+			fail("installing", err)
 		}
 	case "plugin":
 		if err := installPlugin(); err != nil {
-			fmt.Printf("Error installing plugin: %v\n", err)
-			os.Exit(1)
+			fail("installing plugin", err)
 		}
 	case "login":
 		if err := handleLogin(os.Args[2:]); err != nil {
-			fmt.Printf("Error logging in: %v\n", err)
-			os.Exit(1)
+			fail("logging in", err)
 		}
 	case "publish":
 		if err := handlePublish(os.Args[2:]); err != nil {
-			fmt.Printf("Error publishing: %v\n", err)
-			os.Exit(1)
+			fail("publishing", err)
 		}
 	case "serve":
 		if err := serve(); err != nil {
-			fmt.Printf("Error serving: %v\n", err)
-			os.Exit(1)
+			fail("serving", err)
 		}
 	case "build":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: chainlink build <output.rbxlx>")
-			os.Exit(1)
+			usageFail("chainlink build <output.rbxlx>")
 		}
 		if err := handleBuild(os.Args[2]); err != nil {
-			fmt.Printf("Error building: %v\n", err)
-			os.Exit(1)
+			fail("building", err)
 		}
 	case "sourcemap":
-		outputPath := ""
-		for i := 2; i < len(os.Args); i++ {
-			if os.Args[i] == "-o" && i+1 < len(os.Args) {
-				outputPath = os.Args[i+1]
-				break
-			}
+		if err := handleSourcemap(sourcemapOutput(os.Args[2:])); err != nil {
+			fail("generating sourcemap", err)
 		}
-		if err := handleSourcemap(outputPath); err != nil {
-			fmt.Printf("Error generating sourcemap: %v\n", err)
-			os.Exit(1)
-		}
-	case "run":
-
-		if len(os.Args) < 3 {
-			fmt.Println("Usage: chainlink run <spec> [args]")
-			os.Exit(1)
-		}
-		spec := os.Args[2]
-		if err := runToolBySpec(spec, os.Args[3:]); err != nil {
-			fmt.Printf("Error running tool %s: %v\n", spec, err)
-			os.Exit(1)
-		}
-	case "global":
+	case "self-install":
 		if err := handleGlobal(); err != nil {
-			fmt.Printf("Error installing globally: %v\n", err)
-			os.Exit(1)
+			fail("installing globally", err)
 		}
 	default:
-		fmt.Printf("Unknown command: %s\n", cmd)
+		fmt.Fprintf(os.Stderr, "%s unknown command %q\n\n", paint(colorStderr, "error:", sgrBold, sgrRed), cmd)
 		printUsage()
-		os.Exit(1)
+		os.Exit(2)
 	}
 }
 
+// sourcemapOutput returns the -o/--output path. luau-lsp's rojoPath integration
+// passes "--output <path>" along with flags and a project file we don't need.
+func sourcemapOutput(args []string) string {
+	for i, a := range args {
+		switch {
+		case (a == "-o" || a == "--output") && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(a, "--output="):
+			return strings.TrimPrefix(a, "--output=")
+		}
+	}
+	return ""
+}
+
+// usageCommands is the command list shown by "chainlink help".
+var usageCommands = [][2]string{
+	{"init", "Create chain.toml and a starter project (client/, server/, shared/)"},
+	{"install [-y]", "Install the tools and packages in chain.toml (-y: don't ask)"},
+	{"add <spec> [--tool|--package]", "Add a tool (owner/repo@tag) or package (scope/name@version)"},
+	{"remove <name>", "Remove a tool or package from chain.toml"},
+	{"serve", "Start the live-sync server for the Studio plugin"},
+	{"build <output.rbxlx>", "Build the project into a place file"},
+	{"sourcemap [-o <file>]", "Write a Rojo-compatible sourcemap"},
+	{"plugin", "Install the ChainLink Studio plugin"},
+	{"login", "Authenticate with a package registry"},
+	{"publish", "Publish this project as a package"},
+	{"self-install", "Install chainlink to ~/.chainlink/bin and add it to PATH"},
+	{"help", "Show this help"},
+}
+
 func printUsage() {
-	fmt.Println("Usage: chainlink <command> [args]")
-	fmt.Println("Commands: init, install, plugin, login, publish, add, remove, serve, build, run, global, help")
+	fmt.Printf("%s %s\n\n", bold("ChainLink"), dim("— tools and packages for Roblox projects"))
+	fmt.Printf("%s chainlink <command> [args]\n\n", bold("Usage:"))
+	fmt.Println(bold("Commands:"))
+	width := 0
+	for _, c := range usageCommands {
+		width = max(width, len(c[0]))
+	}
+	for _, c := range usageCommands {
+		fmt.Printf("  %s  %s\n", cyan(fmt.Sprintf("%-*s", width, c[0])), c[1])
+	}
 }
 
 func createPlaceholderFile(path string, content string) error {
@@ -240,12 +246,12 @@ func createPlaceholderFile(path string, content string) error {
 func handleInit() error {
 	// 1. Git initialization
 	if _, err := os.Stat(".git"); os.IsNotExist(err) {
-		fmt.Println("Initializing git repository...")
+		status("Initializing", sgrCyan, "git repository")
 		if err := exec.Command("git", "init").Run(); err != nil {
 			return fmt.Errorf("failed to run git init: %w", err)
 		}
 	} else {
-		fmt.Println("Git repository already exists.")
+		status("Skipping", sgrBlue, "git init %s", dim("(repository already exists)"))
 	}
 
 	// 2. Create chain.toml
@@ -253,7 +259,7 @@ func handleInit() error {
 		return fmt.Errorf("chain.toml already exists")
 	}
 
-	fmt.Println("Creating chain.toml...")
+	status("Creating", sgrCyan, "chain.toml")
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current working directory: %w", err)
@@ -274,7 +280,7 @@ func handleInit() error {
 	}
 
 	// 3. Create project structure
-	fmt.Println("Creating project structure...")
+	status("Creating", sgrCyan, "project structure")
 
 	// Client: ExampleController
 	if err := os.MkdirAll("client", 0755); err != nil {
@@ -397,7 +403,8 @@ func handleAdd(args []string) error {
 	}
 
 	section := "Packages"
-	_, name, _, err := parseToolSpec(spec)
+	parsed, err := parseToolSpec(spec)
+	name := parsed.Name
 	if isTool {
 		section = "Tools"
 		if err != nil {
@@ -438,23 +445,106 @@ func containsUppercase(s string) bool {
 	return false
 }
 
-func installAll() error {
+// pendingDownload is a package or tool that isn't in the global cache yet.
+type pendingDownload struct {
+	Kind   string // "package" or "tool"
+	Spec   string
+	Source string
+}
+
+// planDownloads lists what installing config would download, in install order.
+// Invalid specs are reported here so nothing is fetched before they're fixed.
+func planDownloads(config ChainLinkConfig, home string) ([]pendingDownload, error) {
+	var pending []pendingDownload
+	for _, alias := range slices.Sorted(maps.Keys(config.Packages)) {
+		spec := config.Packages[alias]
+		scope, name, version, err := parsePackageSpec(spec)
+		if err != nil {
+			return nil, fmt.Errorf("package %s: %w", alias, err)
+		}
+		if !dirExists(packageInstallDir(home, scope, name, version)) {
+			pending = append(pending, pendingDownload{"package", spec, "wally.run"})
+		}
+	}
+	for _, alias := range slices.Sorted(maps.Keys(config.Tools)) {
+		spec := config.Tools[alias]
+		s, err := parseToolSpec(spec)
+		if err != nil {
+			return nil, fmt.Errorf("tool %s: %w", alias, err)
+		}
+		if _, installed := toolInstallDir(home, s.Name, s.Tag); !installed {
+			pending = append(pending, pendingDownload{"tool", spec, "github.com/" + s.Repo})
+		}
+	}
+	return pending, nil
+}
+
+// confirmDownloads lists pending downloads and asks before fetching anything.
+// assumeYes (chainlink install -y) skips the prompt.
+func confirmDownloads(pending []pendingDownload, assumeYes bool) error {
+	if len(pending) == 0 || assumeYes {
+		return nil
+	}
+	fmt.Println(bold("The following will be downloaded for the first time:"))
+	width := 0
+	for _, p := range pending {
+		width = max(width, len(p.Spec))
+	}
+	for _, p := range pending {
+		fmt.Printf("  %s %-*s  %s\n", cyan(fmt.Sprintf("%-7s", p.Kind)), width, p.Spec, dim("from "+p.Source))
+	}
+	ok, err := confirm(fmt.Sprintf("Download %d item(s)?", len(pending)))
+	if errors.Is(err, errNotInteractive) {
+		return fmt.Errorf("%w; re-run with 'chainlink install -y' to download without asking", err)
+	} else if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("cancelled, nothing was downloaded")
+	}
+	return nil
+}
+
+func installAll(assumeYes bool) error {
 	var config ChainLinkConfig
 	if _, err := toml.DecodeFile("chain.toml", &config); err != nil {
 		return fmt.Errorf("could not find chain.toml: %w", err)
 	}
 
-	fmt.Println("Installing packages...")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+	pending, err := planDownloads(config, home)
+	if err != nil {
+		return err
+	}
+	if err := confirmDownloads(pending, assumeYes); err != nil {
+		return err
+	}
+
 	if err := InstallPackageList(config.Packages); err != nil {
 		return fmt.Errorf("package installation failed: %w", err)
 	}
-
-	fmt.Println("Installing tools...")
 	if err := InstallToolList(config.Tools); err != nil {
 		return fmt.Errorf("tool installation failed: %w", err)
 	}
 
+	status("Finished", sgrGreen, "%d package(s) and %d tool(s) ready", len(config.Packages), len(config.Tools))
 	return nil
+}
+
+// parseInstallArgs accepts -y/--yes and rejects anything else.
+func parseInstallArgs(args []string) (assumeYes bool, err error) {
+	for _, a := range args {
+		switch a {
+		case "-y", "--yes":
+			assumeYes = true
+		default:
+			return false, fmt.Errorf("unknown argument %q", a)
+		}
+	}
+	return assumeYes, nil
 }
 
 // writeConfig encodes config (a ChainLinkConfig or a raw map) to chain.toml,
@@ -528,10 +618,10 @@ func handleGlobal() error {
 		return fmt.Errorf("failed to write binary to %s: %w", destPath, err)
 	}
 
-	fmt.Printf("Chainlink installed globally to %s\n", destPath)
+	status("Installed", sgrGreen, "chainlink %s", dim(destPath))
 
 	if err := InstallChainlink(); err != nil {
-		fmt.Printf("Warning: failed to update PATH: %v\n", err)
+		warnf("failed to update PATH: %v", err)
 	}
 
 	return nil
@@ -726,7 +816,7 @@ func handleLogin(args []string) error {
 		if err := setToken(*api, *token); err != nil {
 			return err
 		}
-		fmt.Println("Token saved.")
+		status("Saved", sgrGreen, "token for %s", *api)
 		return nil
 	}
 
@@ -745,7 +835,7 @@ func handleLogin(args []string) error {
 		if err := setToken(cfg.API, *token); err != nil {
 			return err
 		}
-		fmt.Println("Token saved.")
+		status("Saved", sgrGreen, "token for %s", cfg.API)
 		return nil
 	}
 
@@ -756,8 +846,8 @@ func handleLogin(args []string) error {
 }
 
 func promptAPIKey(api string) error {
-	fmt.Printf("Wally requires an API key to publish to %s.\n", api)
-	fmt.Print("Enter an API key: ")
+	fmt.Printf("Wally requires an API key to publish to %s.\n", bold(api))
+	fmt.Printf("%s %s ", paint(colorStdout, "?", sgrBold, sgrCyan), bold("Enter an API key:"))
 
 	var key string
 	if term.IsTerminal(int(os.Stdin.Fd())) {
@@ -781,7 +871,7 @@ func promptAPIKey(api string) error {
 	if err := setToken(api, key); err != nil {
 		return err
 	}
-	fmt.Println("API key saved.")
+	status("Saved", sgrGreen, "API key for %s", api)
 	return nil
 }
 
@@ -854,10 +944,10 @@ func (g githubDeviceFlow) run(api, clientID string) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("Go to %s\n", dc.VerificationURI)
-	fmt.Printf("And enter the code: %s\n", dc.UserCode)
+	fmt.Printf("  Open %s\n", paint(colorStdout, dc.VerificationURI, sgrBold, sgrCyan))
+	fmt.Printf("  and enter the code %s\n", paint(colorStdout, dc.UserCode, sgrBold, sgrYellow))
 	fmt.Println()
-	fmt.Println("Awaiting authorization...")
+	status("Waiting", sgrCyan, "for GitHub authorization...")
 
 	interval := time.Duration(dc.Interval) * time.Second
 	if interval <= 0 {
@@ -889,7 +979,7 @@ func (g githubDeviceFlow) run(api, clientID string) error {
 			if err := setToken(api, tr.AccessToken); err != nil {
 				return err
 			}
-			fmt.Println("Authorization successful!")
+			status("Authorized", sgrGreen, "with GitHub")
 			return nil
 		case "authorization_pending":
 			continue
@@ -952,7 +1042,7 @@ func buildPackageZip(w io.Writer, projectDir string, manifest []byte) error {
 		root := filepath.Join(projectDir, dir)
 		info, err := os.Stat(root)
 		if errors.Is(err, fs.ErrNotExist) {
-			fmt.Printf("Warning: %s directory not found, skipping.\n", dir)
+			warnf("%s directory not found, skipping", dir)
 			continue
 		} else if err != nil {
 			return err
@@ -1054,7 +1144,7 @@ func handlePublish(args []string) error {
 		return fmt.Errorf("package name and version must be defined in chain.toml for publishing")
 	}
 
-	fmt.Printf("Preparing to publish %s version %s...\n", config.Package.Name, config.Package.Version)
+	status("Packaging", sgrCyan, "%s@%s", config.Package.Name, config.Package.Version)
 
 	// Fetch the registry from the project's config to include it in the manifest
 	registry := projectRegistry(".")
@@ -1069,7 +1159,7 @@ func handlePublish(args []string) error {
 		return fmt.Errorf("failed to create zip: %w", err)
 	}
 
-	fmt.Println("Uploading to Wally registry...")
+	status("Uploading", sgrCyan, "to the Wally registry %s", dim(fmt.Sprintf("(%d KiB)", zipData.Len()/1024)))
 
 	if zipData.Len() > 2*1024*1024 {
 		return fmt.Errorf("package size exceeds 2MB. Reduce package size and try again")
@@ -1117,7 +1207,7 @@ func handlePublish(args []string) error {
 		return fmt.Errorf("failed to publish package: %s\n%s", resp.Status, string(respBody))
 	}
 
-	fmt.Println("Package published successfully!")
+	status("Published", sgrGreen, "%s@%s", config.Package.Name, config.Package.Version)
 	return nil
 }
 
@@ -1154,101 +1244,8 @@ func proxyToTool(toolName string, args []string) error {
 	return runToolBySpec(spec, args)
 }
 
-// parseToolSpec splits "owner/repo@tag" into its repo, short name and tag.
-// The owner is optional ("repo@tag"), but exactly one non-empty tag is required.
-func parseToolSpec(spec string) (repo, name, tag string, err error) {
-	repo, tag, ok := strings.Cut(spec, "@")
-	if !ok || repo == "" || tag == "" || strings.Contains(tag, "@") {
-		return "", "", "", fmt.Errorf("invalid tool spec: %s", spec)
-	}
-	name = repo[strings.LastIndex(repo, "/")+1:]
-	if name == "" {
-		return "", "", "", fmt.Errorf("invalid tool spec: %s", spec)
-	}
-	return repo, name, tag, nil
-}
-
-// toolTagDirs lists the install directory names a tag may live under. InstallTool
-// retries GitHub with a 'v' prefix, so "1.0" can end up installed as "v1.0".
-func toolTagDirs(tag string) []string {
-	if strings.HasPrefix(tag, "v") {
-		return []string{tag}
-	}
-	return []string{tag, "v" + tag}
-}
-
-var errToolBinaryNotFound = errors.New("tool binary not found")
-
-// locateToolBinary finds the installed binary of a tool under toolRoot
-// (~/.chainlink/tools/<name>), checking every directory the tag may map to.
-func locateToolBinary(toolRoot, toolName, tag string) (string, error) {
-	for _, t := range toolTagDirs(tag) {
-		if bin, err := findToolBinary(filepath.Join(toolRoot, t), toolName); err == nil {
-			return bin, nil
-		}
-	}
-	return "", errToolBinaryNotFound
-}
-
-// findToolBinary picks the executable for toolName inside an extracted release.
-// A file named after the tool (ignoring case and .exe) wins; otherwise the first
-// executable that isn't a LICENSE/README-style document is used.
-func findToolBinary(dir, toolName string) (string, error) {
-	var match, fallback string
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || !isRunnableFile(d) {
-			return nil
-		}
-		name := d.Name()
-		if strings.EqualFold(filepath.Ext(name), ".exe") {
-			name = name[:len(name)-len(".exe")]
-		}
-		if strings.EqualFold(name, toolName) {
-			match = p
-			return filepath.SkipAll
-		}
-		if fallback == "" && !isDocFile(name) {
-			fallback = p
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	if match != "" {
-		return match, nil
-	}
-	if fallback != "" {
-		return fallback, nil
-	}
-	return "", errToolBinaryNotFound
-}
-
-func isRunnableFile(d fs.DirEntry) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(filepath.Ext(d.Name()), ".exe")
-	}
-	info, err := d.Info()
-	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0
-}
-
-// isDocFile reports names that release archives ship next to the binary and
-// that makeBinariesExecutable marks executable because they have no extension.
-func isDocFile(name string) bool {
-	lower := strings.ToLower(name)
-	for _, doc := range []string{"license", "licence", "readme", "changelog", "copying", "notice", "authors", "contributors"} {
-		if strings.HasPrefix(lower, doc) {
-			return true
-		}
-	}
-	return false
-}
-
 func runToolBySpec(spec string, args []string) error {
-	_, toolName, tag, err := parseToolSpec(spec)
+	s, err := parseToolSpec(spec)
 	if err != nil {
 		return err
 	}
@@ -1258,27 +1255,19 @@ func runToolBySpec(spec string, args []string) error {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	toolRoot := filepath.Join(home, ".chainlink", "tools", toolName)
-	binaryPath, err := locateToolBinary(toolRoot, toolName, tag)
-	if err != nil {
-		// Try to install the tool if it's missing
-		fmt.Printf("Tool %s not found locally. Attempting to install...\n", toolName)
-
-		// A directory without a usable binary is left over from an interrupted
-		// install; remove it so InstallTool doesn't report "already installed".
-		for _, t := range toolTagDirs(tag) {
-			os.RemoveAll(filepath.Join(toolRoot, t))
-		}
-
-		if installErr := InstallTool(toolName, spec); installErr != nil {
-			return fmt.Errorf("could not find binary for tool %s in %s and installation failed: %v", toolName, toolRoot, installErr)
-		}
-
-		// InstallTool may have installed under the 'v'-prefixed tag, so look in every candidate dir again.
-		binaryPath, err = locateToolBinary(toolRoot, toolName, tag)
+	// Installs are staged and renamed into place, so an existing dir is complete.
+	toolDir, installed := toolInstallDir(home, s.Name, s.Tag)
+	if !installed {
+		status("Missing", sgrYellow, "%s, installing it first", spec)
+		toolDir, err = InstallToolDir(s.Name, spec)
 		if err != nil {
-			return fmt.Errorf("installed tool %s but could not find binary in %s", toolName, toolRoot)
+			return fmt.Errorf("could not find tool %s and installation failed: %v", s.Name, err)
 		}
+	}
+
+	binaryPath, err := findToolBinary(toolDir, s.Name, runtime.GOOS)
+	if err != nil {
+		return fmt.Errorf("could not find binary for tool %s in %s: %w", s.Name, toolDir, err)
 	}
 
 	cmd := exec.Command(binaryPath, args...)

@@ -21,6 +21,13 @@ To install all tools and packages listed in your `chain.toml`:
 chainlink install
 ```
 
+Before downloading anything that isn't already in your global cache (`~/.chainlink`), ChainLink lists it and asks for confirmation. Pass `-y` (or `--yes`) to skip the prompt, e.g. in CI or scripts. Without a terminal to answer, `install` stops and asks you to re-run with `-y`:
+```bash
+chainlink install -y
+```
+
+Output is colored when writing to a terminal. Set `NO_COLOR=1` to turn colors off, or `FORCE_COLOR=1` to force them on.
+
 ## Managing Dependencies
 
 ### Adding Tools and Packages
@@ -45,12 +52,6 @@ chainlink remove name
 ```
 
 ## Advanced Commands
-
-### Running Tools Directly
-If you don't want to create symlinks, you can run a tool directly via its spec:
-```bash
-chainlink run owner/repo@tag [args]
-```
 
 ### The Roblox Studio Plugin
 To install the ChainLink plugin for Roblox Studio:

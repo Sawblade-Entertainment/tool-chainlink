@@ -470,7 +470,7 @@ func (b *Builder) readModel(path, display string) ([]*Instance, error) {
 		err = fmt.Errorf("no <Item> elements found")
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "build: skipping %s: %v\n", display, err)
+		warnf("skipping %s: %v", display, err)
 		return nil, err
 	}
 	if !b.namesOnly {
@@ -505,7 +505,7 @@ func (b *Builder) checkReferents(path, display string, refs []string) {
 		if !ok {
 			b.prefabRefs[ref] = path
 		} else if prev != path && !warned {
-			fmt.Fprintf(os.Stderr, "build: warning: %s reuses referent %s from %s; Ref properties may resolve to the wrong instance\n", display, ref, prev)
+			warnf("%s reuses referent %s from %s; Ref properties may resolve to the wrong instance", display, ref, prev)
 			warned = true
 		}
 	}
@@ -514,9 +514,13 @@ func (b *Builder) checkReferents(path, display string, refs []string) {
 // --- Build command ---
 
 // readFailed reports a file that could not be read and counts it.
+// Unreadable files in global packages only warn, so one broken package
+// cannot block every project build (serve skips them the same way).
 func (b *Builder) readFailed(path string, err error) {
-	fmt.Fprintf(os.Stderr, "build: cannot read %s: %v\n", path, err)
-	b.readErrs++
+	warnf("cannot read %s: %v", path, err)
+	if !isUnder(packagesBase(), path) {
+		b.readErrs++
+	}
 }
 
 // sourcePath returns p relative to the project root (slash-separated) when it
@@ -721,10 +725,10 @@ func (b *Builder) syncDir(absDir, target, relPrefix string) {
 			parent.Children = append(parent.Children, items...)
 
 		case ext == ".rbxm":
-			fmt.Fprintf(os.Stderr, "build: skipping %s: binary .rbxm cannot be embedded in XML .rbxlx; convert it to .rbxmx for build output\n", rel)
+			warnf("skipping %s: binary .rbxm cannot be embedded in XML .rbxlx; convert it to .rbxmx for build output", rel)
 
 		default:
-			fmt.Fprintf(os.Stderr, "build: skipping %s (unsupported class %q)\n", rel, c.ClassName)
+			warnf("skipping %s (unsupported class %q)", rel, c.ClassName)
 		}
 		return nil
 	})
@@ -841,10 +845,10 @@ func (b *Builder) syncModelDir(absDir string, parent *Instance) {
 			parent.Children = append(parent.Children, items...)
 
 		case strings.HasSuffix(lower, ".rbxm"):
-			fmt.Fprintf(os.Stderr, "build: skipping %s: binary .rbxm cannot be embedded in XML output; convert it to .rbxmx\n", name)
+			warnf("skipping %s: binary .rbxm cannot be embedded in XML output; convert it to .rbxmx", name)
 
 		default:
-			fmt.Fprintf(os.Stderr, "build: skipping %s (unsupported file type)\n", name)
+			warnf("skipping %s (unsupported file type)", name)
 		}
 	}
 }
