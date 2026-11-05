@@ -1,19 +1,23 @@
 package main
 
 import (
+	"crypto/subtle"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"github.com/fsnotify/fsnotify"
@@ -22,15 +26,17 @@ import (
 //go:embed bootstrap/*.luau
 var bootstrapFS embed.FS
 
+// longPollTimeout is a var so tests can shorten it.
+var longPollTimeout = 20 * time.Second
+
 const (
-	longPollTimeout = 20 * time.Second
-	debounceWindow  = 75 * time.Millisecond
-	reloadDebounce  = 500 * time.Millisecond
-	maxQueueLen     = 10000
-	configFileName  = "chainlink.json"
-	chainTomlName   = "chain.toml"
-	packageSrcDir   = "src"
-	pkgPrefix       = "~pkg/" // namespace for package rel paths
+	debounceWindow = 75 * time.Millisecond
+	reloadDebounce = 500 * time.Millisecond
+	maxQueueLen    = 10000
+	configFileName = "chainlink.json"
+	chainTomlName  = "chain.toml"
+	packageSrcDir  = "src"
+	pkgPrefix      = "~pkg/" // namespace for package rel paths
 )
 
 // ---------- Config ----------
@@ -292,14 +298,17 @@ func (q *Queue) Since(since uint64) (events []Event, latest uint64, ok bool) {
 	if since > q.seq {
 		return nil, q.seq, false
 	}
-	if len(q.events) > 0 && since < q.events[0].Seq-1 {
+	if len(q.events) == 0 || since == q.seq {
+		return nil, q.seq, true
+	}
+	first := q.events[0].Seq
+	if since < first-1 {
 		return nil, q.seq, false
 	}
-	for _, ev := range q.events {
-		if ev.Seq > since {
-			events = append(events, ev)
-		}
-	}
+	// Seqs are contiguous, so the tail can be sliced directly instead of scanned.
+	tail := q.events[since-(first-1):]
+	events = make([]Event, len(tail))
+	copy(events, tail)
 	return events, q.seq, true
 }
 
@@ -447,7 +456,10 @@ type Server struct {
 	cfg    ProjectConfig
 	active []GlobalPackageMapping // packages currently synced (present on disk)
 
-	reloadMu sync.Mutex // serializes reloadPackages
+	reloadMu  sync.Mutex // serializes reloadPackages
+	resolveMu sync.Mutex // serializes resolve so concurrent timers can't double-emit
+
+	watchFailed sync.Map // abs path -> struct{}; watch errors are logged once per path
 
 	mu          sync.Mutex
 	known       map[string]bool
@@ -559,34 +571,63 @@ func isShadowedRootInit(cfg ProjectConfig, rel string) bool {
 	return strings.EqualFold(stem, "init")
 }
 
-// removeDir emits deletes for a removed directory. If a file still owns the
-// same instance (file+folder merge), only the folder's contents are removed
-// so the file's instance survives and "unmerges".
+// removeDir emits deletes for a removed directory. If a file outside the
+// directory still owns the same instance (file+folder merge), only the folder's
+// direct children are removed so the file's instance survives and "unmerges".
 func (s *Server) removeDir(rel string, children []string, childIsDir map[string]bool) {
 	cfg := s.conf()
 	c := classify(cfg, rel, true)
+	key := instanceKey(c.Target, c.InstancePath)
+
+	// Everything inside the folder is gone, so release what its files owned.
+	s.mu.Lock()
+	owner, hasOwner := s.owners[key]
+	for k, o := range s.owners {
+		if strings.HasPrefix(o, rel+"/") {
+			delete(s.owners, k)
+		}
+	}
+	s.mu.Unlock()
 	if !c.Syncable {
 		return
 	}
 
-	s.mu.Lock()
-	owner, merged := s.owners[instanceKey(c.Target, c.InstancePath)]
-	s.mu.Unlock()
+	merged := false
+	if hasOwner && owner != rel && !strings.HasPrefix(owner, rel+"/") {
+		_, err := os.Stat(s.absPath(owner))
+		merged = err == nil
+	}
 
 	if !merged {
-		s.queue.Push(Event{Op: "DELETE", Path: rel, Target: c.Target, InstancePath: c.InstancePath})
+		evs := []Event{{Op: "DELETE", Path: rel, Target: c.Target, InstancePath: c.InstancePath}}
+		evs = append(evs, s.promoteShadowed(rel, relParent(rel), c.Target, c.InstancePath)...)
+		s.queue.Push(evs...)
 		log.Printf("[DELETE] %s/", rel)
 		return
 	}
 
+	// Destroying a direct child destroys its descendants, so only those are sent.
 	sort.Strings(children)
+	seen := map[string]bool{key: true} // never touch the surviving file's instance
 	var evs []Event
 	for _, child := range children {
+		if strings.Contains(child[len(rel)+1:], "/") {
+			continue
+		}
+		var ev Event
 		if childIsDir[child] {
-			if cc := classify(cfg, child, true); cc.Syncable {
-				evs = append(evs, Event{Op: "DELETE", Path: child, Target: cc.Target, InstancePath: cc.InstancePath})
+			cc := classify(cfg, child, true)
+			if !cc.Syncable {
+				continue
 			}
-		} else if ev, ok := s.fileEvent(child, "DELETE"); ok {
+			ev = Event{Op: "DELETE", Path: child, Target: cc.Target, InstancePath: cc.InstancePath}
+		} else if fe, ok := s.fileEvent(child, "DELETE"); ok {
+			ev = fe
+		} else {
+			continue
+		}
+		if k := instanceKey(ev.Target, ev.InstancePath); !seen[k] {
+			seen[k] = true
 			evs = append(evs, ev)
 		}
 	}
@@ -594,31 +635,132 @@ func (s *Server) removeDir(rel string, children []string, childIsDir map[string]
 	log.Printf("[UNMERGE] %s/ removed from %s (%d children)", rel, owner, len(evs))
 }
 
+// relParent returns the parent of a slash-separated rel path ("" at the top).
+func relParent(rel string) string {
+	if i := strings.LastIndex(rel, "/"); i >= 0 {
+		return rel[:i]
+	}
+	return ""
+}
+
+// promoteShadowed looks for another file that maps to the instance a removed
+// path owned (e.g. foo.lua shadowed by foo.luau, or foo.luau shadowed by
+// foo/init.luau) and returns a CREATE for the first one, which now owns it.
+// instDir is the rel dir holding the instance's name entries.
+func (s *Server) promoteShadowed(gone, instDir, target string, instPath []string) []Event {
+	if len(instPath) == 0 || instDir == "" {
+		return nil
+	}
+	cfg := s.conf()
+	key := instanceKey(target, instPath)
+	name := instPath[len(instPath)-1]
+	for _, dir := range []string{instDir, instDir + "/" + name} {
+		entries, err := os.ReadDir(s.absPath(dir)) // sorted, so the pick is deterministic
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			r := dir + "/" + e.Name()
+			if e.IsDir() || r == gone {
+				continue
+			}
+			c := classify(cfg, r, false)
+			if !c.Syncable || instanceKey(c.Target, c.InstancePath) != key {
+				continue
+			}
+			ev, ok := s.fileEvent(r, "CREATE")
+			if !ok || !s.claim(ev) {
+				continue
+			}
+			s.mu.Lock()
+			s.known[r] = false
+			s.mu.Unlock()
+			log.Printf("[PROMOTE] %s now owns %s.%s", r, target, strings.Join(instPath, "."))
+			return []Event{ev}
+		}
+	}
+	return nil
+}
+
+// jsonToLuau renders decoded JSON as a Luau literal. Map keys are sorted so
+// the same file always produces the same Source.
 func jsonToLuau(v any) string {
+	var b strings.Builder
+	writeLuauValue(&b, v)
+	return b.String()
+}
+
+func writeLuauValue(b *strings.Builder, v any) {
 	switch t := v.(type) {
 	case map[string]any:
-		var pairs []string
-		for k, val := range t {
-			pairs = append(pairs, fmt.Sprintf("[%q] = %s", k, jsonToLuau(val)))
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
 		}
-		return "{" + strings.Join(pairs, ", ") + "}"
+		sort.Strings(keys)
+		b.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteByte('[')
+			writeLuauString(b, k)
+			b.WriteString("] = ")
+			writeLuauValue(b, t[k])
+		}
+		b.WriteByte('}')
 	case []any:
-		var items []string
-		for _, val := range t {
-			items = append(items, jsonToLuau(val))
+		b.WriteByte('{')
+		for i, val := range t {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			writeLuauValue(b, val)
 		}
-		return "{" + strings.Join(items, ", ") + "}"
+		b.WriteByte('}')
 	case string:
-		return fmt.Sprintf("%q", t)
+		writeLuauString(b, t)
 	case float64:
-		return fmt.Sprintf("%g", t)
+		b.WriteString(strconv.FormatFloat(t, 'g', -1, 64)) // same output as %g
 	case bool:
-		return fmt.Sprintf("%t", t)
+		b.WriteString(strconv.FormatBool(t))
 	case nil:
-		return "nil"
+		b.WriteString("nil")
 	default:
-		return fmt.Sprintf("%v", t)
+		fmt.Fprintf(b, "%v", t)
 	}
+}
+
+// writeLuauString quotes s with escapes the Luau lexer accepts (\xHH, \u{X}),
+// unlike strconv.Quote, which emits Go-only \uXXXX / \UXXXXXXXX forms.
+func writeLuauString(b *strings.Builder, s string) {
+	const hex = "0123456789abcdef"
+	b.WriteByte('"')
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r == '"':
+			b.WriteString(`\"`)
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r < 0x20 || r == 0x7f || (r == utf8.RuneError && size == 1):
+			b.WriteString(`\x`)
+			b.WriteByte(hex[s[i]>>4])
+			b.WriteByte(hex[s[i]&0xf])
+		case r < utf8.RuneSelf || strconv.IsPrint(r):
+			b.WriteString(s[i : i+size])
+		default:
+			fmt.Fprintf(b, `\u{%x}`, r)
+		}
+		i += size
+	}
+	b.WriteByte('"')
 }
 
 // walkFiles emits CREATE events for every syncable file under absDir.
@@ -626,7 +768,11 @@ func jsonToLuau(v any) string {
 func (s *Server) walkFiles(absDir string, out *[]Event) (rootInit bool) {
 	cfg := s.conf()
 	filepath.Walk(absDir, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			logWalkErr(p, err)
+			return nil
+		}
+		if info.IsDir() {
 			return nil
 		}
 		rel, ok := s.relPath(p)
@@ -726,7 +872,16 @@ func (s *Server) scheduleReload() {
 	s.reloadTimer = time.AfterFunc(reloadDebounce, s.reloadPackages)
 }
 
+// resolve diffs rel against what's known and pushes the resulting events.
+// Calls are serialized: two debounce timers for the same path firing together
+// would otherwise both see it as unknown and push duplicate CREATEs.
 func (s *Server) resolve(rel string) {
+	s.resolveMu.Lock()
+	defer s.resolveMu.Unlock()
+	s.resolveLocked(rel)
+}
+
+func (s *Server) resolveLocked(rel string) {
 	s.mu.Lock()
 	delete(s.pending, rel)
 	wasDir, wasKnown := s.known[rel]
@@ -748,11 +903,15 @@ func (s *Server) resolve(rel string) {
 		if !wasKnown {
 			return
 		}
+		var children []string
+		childIsDir := map[string]bool{}
 		s.mu.Lock()
 		delete(s.known, rel)
 		if wasDir {
-			for k := range s.known {
+			for k, isDir := range s.known {
 				if strings.HasPrefix(k, rel+"/") {
+					children = append(children, k)
+					childIsDir[k] = isDir
 					delete(s.known, k)
 				}
 			}
@@ -760,16 +919,20 @@ func (s *Server) resolve(rel string) {
 		s.mu.Unlock()
 
 		if wasDir {
-			if c := classify(s.conf(), rel, true); c.Syncable {
-				s.queue.Push(Event{Op: "DELETE", Path: rel, Target: c.Target, InstancePath: c.InstancePath})
-				log.Printf("[DELETE] %s/", rel)
-			}
+			s.removeDir(rel, children, childIsDir)
 			return
 		}
-		if ev, ok := s.fileEvent(rel, "DELETE"); ok && s.release(ev) {
-			s.queue.Push(ev)
-			log.Printf("[DELETE] %s", rel)
+		ev, ok := s.fileEvent(rel, "DELETE")
+		if !ok || !s.release(ev) {
+			return
 		}
+		// A file that was shadowed by this one (e.g. foo.lua next to foo.luau) takes over.
+		instDir := relParent(rel)
+		if classify(s.conf(), rel, false).IsInit {
+			instDir = relParent(instDir)
+		}
+		s.queue.Push(append([]Event{ev}, s.promoteShadowed(rel, instDir, ev.Target, ev.InstancePath)...)...)
+		log.Printf("[DELETE] %s", rel)
 		return
 	}
 
@@ -781,9 +944,13 @@ func (s *Server) resolve(rel string) {
 		if wasKnown {
 			return
 		}
-		s.watcher.Add(abs)
+		s.watch(abs)
 		filepath.Walk(abs, func(p string, fi os.FileInfo, err error) error {
-			if err != nil || p == abs {
+			if err != nil {
+				logWalkErr(p, err)
+				return nil
+			}
+			if p == abs {
 				return nil
 			}
 			r, ok := s.relPath(p)
@@ -791,13 +958,13 @@ func (s *Server) resolve(rel string) {
 				return nil
 			}
 			if fi.IsDir() {
-				s.watcher.Add(p)
+				s.watch(p)
 				s.mu.Lock()
 				s.known[r] = true
 				s.mu.Unlock()
 				return nil
 			}
-			s.resolve(r)
+			s.resolveLocked(r)
 			return nil
 		})
 		return
@@ -848,8 +1015,10 @@ func (s *Server) forget(rootRel string) {
 // the way to each declared package, so installs/uninstalls/src changes are seen.
 func (s *Server) watchPackageAncestors(cfg ProjectConfig) {
 	base := packagesBase()
-	os.MkdirAll(base, 0o755)
-	s.watcher.Add(base)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		log.Printf("Warning: could not create %s: %v", base, err)
+	}
+	s.watch(base)
 	for _, p := range cfg.Packages {
 		cur := base
 		for _, part := range strings.Split(p.PackageName, "/") {
@@ -857,8 +1026,41 @@ func (s *Server) watchPackageAncestors(cfg ProjectConfig) {
 			if !dirExists(cur) {
 				break
 			}
-			s.watcher.Add(cur)
+			s.watch(cur)
 		}
+	}
+}
+
+// watch adds a directory to the watcher. Failures are logged once per path;
+// they usually mean the OS watch limit is exhausted and that subtree won't sync.
+func (s *Server) watch(abs string) error {
+	if s.watcher == nil {
+		return nil
+	}
+	err := s.watcher.Add(abs)
+	if err != nil {
+		if _, logged := s.watchFailed.LoadOrStore(abs, struct{}{}); !logged {
+			log.Printf("Warning: cannot watch %s: %v (changes there won't sync; %s)", abs, err, watchLimitHint())
+		}
+	}
+	return err
+}
+
+func watchLimitHint() string {
+	switch runtime.GOOS {
+	case "linux":
+		return "try raising fs.inotify.max_user_watches"
+	case "darwin", "freebsd", "openbsd", "netbsd":
+		return "try raising the open file limit with ulimit -n"
+	default:
+		return "check the OS file watch limits"
+	}
+}
+
+// logWalkErr reports walk failures other than paths vanishing mid-walk.
+func logWalkErr(p string, err error) {
+	if !os.IsNotExist(err) {
+		log.Printf("Warning: cannot read %s: %v", p, err)
 	}
 }
 
@@ -994,6 +1196,7 @@ func (s *Server) primeDir(absDir string) {
 	cfg := s.conf()
 	filepath.Walk(absDir, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
+			logWalkErr(p, err)
 			return nil
 		}
 		rel, ok := s.relPath(p)
@@ -1001,7 +1204,7 @@ func (s *Server) primeDir(absDir string) {
 			return nil
 		}
 		if info.IsDir() {
-			s.watcher.Add(p)
+			s.watch(p)
 			s.mu.Lock()
 			s.known[rel] = true
 			s.mu.Unlock()
@@ -1025,9 +1228,27 @@ func (s *Server) primeKnown() {
 
 // ---------- HTTP ----------
 
+// isLoopbackHost reports whether a Host header names this machine. Rejecting
+// anything else stops DNS-rebinding pages from reading the project via /changes.
+func isLoopbackHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	switch strings.ToLower(strings.Trim(host, "[]")) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if tok := s.conf().Token; tok != "" && r.Header.Get("X-ChainLink-Token") != tok {
+		if !isLoopbackHost(r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		if tok := s.conf().Token; tok != "" &&
+			subtle.ConstantTimeCompare([]byte(r.Header.Get("X-ChainLink-Token")), []byte(tok)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -1140,7 +1361,9 @@ func serve() error {
 		owners:  map[string]string{},
 	}
 
-	watcher.Add(root)            // catches chain.toml / chainlink.json edits
+	if err := s.watch(root); err != nil { // catches chain.toml / chainlink.json edits
+		return fmt.Errorf("failed to watch %s: %w", root, err)
+	}
 	s.watchPackageAncestors(cfg) // catches installs/uninstalls under ~/.chainlink/packages
 	s.primeKnown()
 	go s.watchLoop()
