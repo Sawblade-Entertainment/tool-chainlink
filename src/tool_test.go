@@ -1258,7 +1258,7 @@ func TestInstallPlugin(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("plugin dir layout tested on darwin/linux")
 	}
-	tricky := "local s = \"<b>&amp;</b>\" -- 100% 'quoted' ]]> %s %d\n\tprint(a < b and c > d & e)\n"
+	tricky := "local s = \"<b>&amp;</b>\" -- 100% 'quoted' ]]> %s %d {{Source}}\n\tprint(a < b and c > d & e)\n"
 	for name, src := range map[string]string{"embedded": pluginSource, "tricky": tricky} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()

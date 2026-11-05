@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -1211,5 +1212,38 @@ func TestRunToolBySpecRejectsTraversal(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Fatalf("file outside tools dir was touched: %v", err)
+	}
+}
+
+func TestHandleInitWritesTemplate(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	cliSetHome(t)
+	dir := cliChdirTemp(t)
+	if err := handleInit(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"client/ExampleController.luau": "function mod:init()",
+		"server/ExampleService.luau":    "function mod:init()",
+		"shared/ExampleData.json":       `"hello": "world"`,
+		".vscode/settings.json":         `"luau-lsp.sourcemap.rojoPath": "chainlink"`,
+		".vscode/globals.d.luau":        "declare use: (module: any) -> any",
+	}
+	for rel, snippet := range want {
+		if got := cliReadFile(t, filepath.Join(dir, filepath.FromSlash(rel))); !strings.Contains(got, snippet) {
+			t.Errorf("%s = %q, want it to contain %q", rel, got, snippet)
+		}
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(cliReadFile(t, filepath.Join(dir, ".vscode", "settings.json"))), &settings); err != nil {
+		t.Errorf(".vscode/settings.json is not valid JSON: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "chain.toml")); err != nil {
+		t.Errorf("chain.toml not created: %v", err)
+	}
+	if err := handleInit(); err == nil {
+		t.Error("second init should refuse to overwrite chain.toml")
 	}
 }

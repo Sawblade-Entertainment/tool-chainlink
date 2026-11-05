@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -41,29 +42,13 @@ type ChainLinkConfig struct {
 	Packages map[string]string `toml:"Packages"`
 }
 
-var (
-	ExampleController = `function mod:init()
-	print("Hello world!")
-end`
-	ExampleService = `function mod:init()
-	print("Hello world!")
-end`
-	ExampleData = `{
-	"hello": "world"
-}`
-	VSCodeSettings = `{
-    "luau-lsp.sourcemap.rojoPath": "chainlink",
-    "luau-lsp.sourcemap.rojoProjectFile": "chain.toml",
-	"luau-lsp.sourcemap.useVSCodeWatcher": true,
-    "luau-lsp.types.definitionFiles": [
-        ".vscode/globals.d.luau"
-    ]
-}`
-	VSCodeGlobals = `declare mod: any
-declare use: (module: any) -> any
-declare new: (instance: string) -> Instance
-declare module: any`
-)
+// initTemplate holds the files `chainlink init` creates, laid out as they
+// appear in the new project. "all:" keeps the dot-directory .vscode.
+//
+//go:embed all:templates/init
+var initTemplate embed.FS
+
+const initTemplateRoot = "templates/init"
 
 // registryClient is shared by registry config fetches, the GitHub device flow
 // and publish uploads so none of them can hang forever on a stalled connection.
@@ -245,6 +230,21 @@ func createPlaceholderFile(path string, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
+// writeInitTemplate copies the embedded init template into dir.
+func writeInitTemplate(dir string) error {
+	return fs.WalkDir(initTemplate, initTemplateRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := initTemplate.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(p, initTemplateRoot+"/")
+		return createPlaceholderFile(filepath.Join(dir, filepath.FromSlash(rel)), string(data))
+	})
+}
+
 func handleInit() error {
 	// 1. Git initialization
 	if _, err := os.Stat(".git"); os.IsNotExist(err) {
@@ -284,39 +284,7 @@ func handleInit() error {
 	// 3. Create project structure
 	status("Creating", sgrCyan, "project structure")
 
-	// Client: ExampleController
-	if err := os.MkdirAll("client", 0755); err != nil {
-		return fmt.Errorf("failed to create directory client: %w", err)
-	}
-	if err := createPlaceholderFile(filepath.Join("client", "ExampleController.luau"), ExampleController); err != nil {
-		return err
-	}
-
-	// Server: ExampleService
-	if err := os.MkdirAll("server", 0755); err != nil {
-		return fmt.Errorf("failed to create directory server: %w", err)
-	}
-	if err := createPlaceholderFile(filepath.Join("server", "ExampleService.luau"), ExampleService); err != nil {
-		return err
-	}
-
-	// Shared: ExampleData
-	if err := os.MkdirAll("shared", 0755); err != nil {
-		return fmt.Errorf("failed to create directory shared: %w", err)
-	}
-	if err := createPlaceholderFile(filepath.Join("shared", "ExampleData.json"), ExampleData); err != nil {
-		return err
-	}
-
-	// VSCode configuration
-	if err := createPlaceholderFile(filepath.Join(".vscode", "settings.json"), VSCodeSettings); err != nil {
-		return err
-	}
-	if err := createPlaceholderFile(filepath.Join(".vscode", "globals.d.luau"), VSCodeGlobals); err != nil {
-		return err
-	}
-
-	return nil
+	return writeInitTemplate(".")
 }
 
 // loadRawConfig decodes chain.toml into a generic map so add/remove can rewrite

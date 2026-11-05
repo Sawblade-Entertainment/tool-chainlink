@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -51,26 +52,17 @@ type injectedGlobal struct {
 	Body string
 }
 
+var (
+	//go:embed templates/globals/use.luau
+	useGlobal string
+	//go:embed templates/globals/new.luau
+	newGlobal string
+)
+
 // InjectGlobals is ordered so the generated prelude is deterministic.
 var InjectGlobals = []injectedGlobal{
-	{"use", `function use(m)
-	if type(m) == "string" and m:sub(1,1) ~= "." and m:sub(1,1) ~= "@" then
-		if m:sub(1,1) == "/" then
-			local curr = game.ReplicatedStorage
-			for _, child in pairs(m:sub(2,#m):split("/")) do
-				curr = curr:WaitForChild(child)
-			end
-			m = curr
-		elseif string.lower(m) == m then
-			m = game.ReplicatedStorage:WaitForChild("packages"):WaitForChild(m)
-		else
-			return game:GetService(m)
-		end
-	end
-	return require(m)
-end
-`},
-	{"new", "function new(c) return Instance.new(c) end\n"},
+	{"use", useGlobal},
+	{"new", newGlobal},
 }
 
 func NewBuilder(cfg ProjectConfig, root string) *Builder {
