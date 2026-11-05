@@ -58,8 +58,12 @@ func getRobloxPluginsDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return pluginsDirFor(runtime.GOOS, home)
+}
 
-	switch runtime.GOOS {
+// pluginsDirFor returns Roblox Studio's local plugins folder for goos.
+func pluginsDirFor(goos, home string) (string, error) {
+	switch goos {
 	case "windows":
 		return filepath.Join(home, "AppData", "Local", "Roblox", "Plugins"), nil
 	case "darwin":
@@ -67,7 +71,7 @@ func getRobloxPluginsDir() (string, error) {
 	case "linux":
 		return filepath.Join(home, ".local", "share", "roblox", "Plugins"), nil
 	default:
-		return "", fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+		return "", fmt.Errorf("unsupported platform: %s", goos)
 	}
 }
 

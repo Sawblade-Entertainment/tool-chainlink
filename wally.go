@@ -1,16 +1,15 @@
 package main
 
 import (
-	"archive/zip"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-const wallyRegistryAPI = "https://api.wally.run/v1/package-contents"
+// wallyRegistryAPI is a variable so tests can point it at an httptest server.
+var wallyRegistryAPI = "https://api.wally.run/v1/package-contents"
 
 // InstallPackageList installs a list of wally packages from a map where keys are aliases and values are package names (e.g., "vibeonline/razorinput@0.1.0")
 func InstallPackageList(packages map[string]string) error {
@@ -23,36 +22,48 @@ func InstallPackageList(packages map[string]string) error {
 	return nil
 }
 
+// parsePackageSpec parses "scope/name@version".
+func parsePackageSpec(packageName string) (scope, name, version string, err error) {
+	parts := strings.Split(packageName, "@")
+	if len(parts) != 2 {
+		return "", "", "", fmt.Errorf("invalid package name format: %s. Expected scope/name@version", packageName)
+	}
+	scopeParts := strings.Split(parts[0], "/")
+	if len(scopeParts) != 2 || !validPathComponent(scopeParts[0]) || !validPathComponent(scopeParts[1]) {
+		return "", "", "", fmt.Errorf("invalid scope/name format: %s. Expected scope/name", parts[0])
+	}
+	if !validPathComponent(parts[1]) {
+		return "", "", "", fmt.Errorf("invalid package version in %s", packageName)
+	}
+	return scopeParts[0], scopeParts[1], parts[1], nil
+}
+
 // InstallPackage installs a wally package by its name (e.g., "vibeonline/razorinput@0.1.0")
 // It downloads the package zip directly from the Wally registry and extracts it.
 func InstallPackage(alias, packageName string) error {
-	// Parse package name: "scope/name@version"
-	parts := strings.Split(packageName, "@")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid package name format: %s. Expected scope/name@version", packageName)
+	scope, name, version, err := parsePackageSpec(packageName)
+	if err != nil {
+		return err
 	}
 
-	scopeName := parts[0]
-	version := parts[1]
-
-	scopeParts := strings.Split(scopeName, "/")
-	if len(scopeParts) != 2 {
-		return fmt.Errorf("invalid scope/name format: %s. Expected scope/name", scopeName)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	scope := scopeParts[0]
-	name := scopeParts[1]
+	// Global package directory: ~/.chainlink/packages/scope_name/version
+	// Checked before any network I/O so re-installs cost nothing.
+	globalPkgDir := filepath.Join(home, ".chainlink", "packages", scope+"_"+name, version)
+	if _, err := os.Stat(globalPkgDir); err == nil {
+		fmt.Printf("Package %s/%s version %s is already installed globally. Skipping.\n", scope, name, version)
+		return nil
+	}
 
 	// Construct the registry URL
 	url := fmt.Sprintf("%s/%s/%s/%s", wallyRegistryAPI, scope, name, version)
 
 	fmt.Printf("Downloading package %s from %s...\n", packageName, url)
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			ForceAttemptHTTP2: true,
-		},
-	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
@@ -62,106 +73,30 @@ func InstallPackage(alias, packageName string) error {
 	req.Header.Set("User-Agent", "wally/0.3.2")
 	req.Header.Set("Wally-Version", "0.3.2")
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to request package: %v", err)
-	}
-	defer resp.Body.Close()
-
-	fmt.Printf("Response status: %s\n", resp.Status)
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("registry returned non-OK status: %s", resp.Status)
-	}
-
-	// Create a temporary file to hold the zip
-	tmpFile, err := os.CreateTemp("", "wally-package-*.zip")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %v", err)
-	}
-	tmpFileName := tmpFile.Name()
-	defer os.Remove(tmpFileName)
-	defer tmpFile.Close()
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		return fmt.Errorf("failed to save package to temp file: %v", err)
-	}
-
-	// Ensure data is flushed to disk before reading back via zip.OpenReader
-	if err := tmpFile.Sync(); err != nil {
-		return fmt.Errorf("failed to sync temp file: %v", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temp file: %v", err)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	// Global package directory: ~/.chainlink/packages/scope_name/version
-	globalPkgDir := filepath.Join(home, ".chainlink", "packages", scope+"_"+name, version)
-	if _, err := os.Stat(globalPkgDir); err == nil {
-		fmt.Printf("Package %s version %s is already installed globally. Skipping.\n", scopeName, version)
-		return nil
-	}
-
-	if err := os.MkdirAll(globalPkgDir, os.ModePerm); err != nil {
-		return fmt.Errorf("failed to create global package directory: %v", err)
-	}
-
-	if err := unzip(tmpFileName, globalPkgDir); err != nil {
-		return fmt.Errorf("failed to extract package globally: %v", err)
-	}
-
-	fmt.Printf("Successfully installed %s globally to %s\n", packageName, globalPkgDir)
-	return nil
-}
-
-func unzip(src string, dest string) error {
-	r, err := zip.OpenReader(src)
+	// Download and extract into a staging dir, and move it into place only on
+	// success, so a failed install is retried rather than skipped next time.
+	staging, err := newStagingDir(home)
 	if err != nil {
 		return err
 	}
-	defer r.Close()
+	defer os.RemoveAll(staging)
 
-	for _, f := range r.File {
-		fpath := filepath.Join(dest, f.Name)
-
-		// Check for ZipSlip (directory traversal)
-		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) &&
-			fpath != filepath.Clean(dest) {
-			return fmt.Errorf("illegal file path in zip: %s", fpath)
-		}
-
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(fpath, os.ModePerm)
-			continue
-		}
-
-		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-			return err
-		}
-
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-
-		out, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			rc.Close()
-			return err
-		}
-
-		_, err = io.Copy(out, rc)
-		out.Close()
-		rc.Close()
-
-		if err != nil {
-			return err
-		}
+	zipPath := filepath.Join(staging, "package.zip")
+	if err := downloadRequest(req, zipPath); err != nil {
+		return fmt.Errorf("failed to download package: %v", err)
 	}
+
+	contents := filepath.Join(staging, "contents")
+	if err := os.MkdirAll(contents, 0755); err != nil {
+		return err
+	}
+	if err := extractZip(zipPath, contents); err != nil {
+		return fmt.Errorf("failed to extract package globally: %v", err)
+	}
+	if err := moveIntoPlace(contents, globalPkgDir); err != nil {
+		return err
+	}
+
+	fmt.Printf("Successfully installed %s globally to %s\n", packageName, globalPkgDir)
 	return nil
 }
