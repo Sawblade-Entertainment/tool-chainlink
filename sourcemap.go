@@ -21,46 +21,23 @@ func handleSourcemap(outputPath string) error {
 		return err
 	}
 
+	// Only names, classes and file paths are needed, so skip reading and
+	// transforming script contents.
 	b := NewBuilder(cfg, root)
-
-	// Mimic the build process to populate the tree
-	for _, s := range []string{"Workspace", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPlayer"} {
-		b.service(s)
-	}
-	b.resolveTarget("StarterPlayer.StarterPlayerScripts")
-
-	b.syncBootstrap()
-
-	for _, r := range cfg.Roots {
-		absDir := filepath.Join(root, r.Dir)
-		if dirExists(absDir) {
-			b.syncDir(absDir, r.Target, "")
-		}
-	}
-	for _, p := range cfg.Packages {
-		absDir := filepath.Join(packagesBase(), filepath.FromSlash(p.PackageName))
-		if !dirExists(absDir) {
-			continue
-		}
-
-		srcDir := filepath.Join(absDir, "src")
-		if dirExists(srcDir) {
-			b.syncDir(srcDir, p.Target, "")
-		} else {
-			b.syncDir(absDir, p.Target, "")
-		}
-	}
+	b.namesOnly = true
+	b.populatePlace()
 
 	// The root of the sourcemap is a virtual node representing the project.
-	// Using "Teast" as name and "DataModel" as class based on user example.
 	rootNode := &SourcemapNode{
-		Name:      "Teast",
+		Name:      filepath.Base(root),
 		ClassName: "DataModel",
 		FilePaths: []string{"chain.toml"},
 	}
 
 	for _, inst := range b.top {
-		rootNode.Children = append(rootNode.Children, convertToSourcemapNode(inst))
+		if node := convertToSourcemapNode(inst); node != nil {
+			rootNode.Children = append(rootNode.Children, node)
+		}
 	}
 
 	data, err := json.MarshalIndent(rootNode, "", "  ")
@@ -78,7 +55,12 @@ func handleSourcemap(outputPath string) error {
 	return nil
 }
 
+// convertToSourcemapNode returns nil for embedded prefab items without a
+// name, which luau-lsp could not resolve.
 func convertToSourcemapNode(inst *Instance) *SourcemapNode {
+	if inst.Name == "" && inst.RawXML != "" {
+		return nil
+	}
 	node := &SourcemapNode{
 		Name:      inst.Name,
 		ClassName: inst.Class,
@@ -89,7 +71,9 @@ func convertToSourcemapNode(inst *Instance) *SourcemapNode {
 	}
 
 	for _, child := range inst.Children {
-		node.Children = append(node.Children, convertToSourcemapNode(child))
+		if c := convertToSourcemapNode(child); c != nil {
+			node.Children = append(node.Children, c)
+		}
 	}
 
 	return node
