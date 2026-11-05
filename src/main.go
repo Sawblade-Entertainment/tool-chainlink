@@ -957,6 +957,9 @@ func (g githubDeviceFlow) run(api, clientID string) error {
 			return errors.New("device code expired, please try again")
 		case "access_denied":
 			return errors.New("authorization was cancelled")
+		case "incorrect_client_credentials":
+			return fmt.Errorf("GitHub rejected the registry's OAuth app (client ID %s); it may have device flow disabled or be misconfigured. "+
+				"Ask the registry owner to fix it, or log in with a token instead: chainlink login --api %s --token <token>", clientID, api)
 		default:
 			return fmt.Errorf("GitHub auth error: %s (%s)", tr.Error, tr.ErrorDescription)
 		}

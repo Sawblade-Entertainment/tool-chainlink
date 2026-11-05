@@ -632,6 +632,7 @@ func TestGithubDeviceFlow(t *testing.T) {
 		},
 		{name: "expired", responses: []string{`{"error":"expired_token"}`}, wantErr: "expired"},
 		{name: "denied", responses: []string{`{"error":"access_denied"}`}, wantErr: "cancelled"},
+		{name: "bad client", responses: []string{`{"error":"incorrect_client_credentials"}`}, wantErr: "--api https://api.example/ --token"},
 		{name: "unknown", responses: []string{`{"error":"weird","error_description":"desc"}`}, wantErr: "weird (desc)"},
 		{name: "empty token", responses: []string{`{"token_type":"bearer"}`}, wantErr: "empty access token"},
 		{name: "http error", responses: nil, wantErr: "failed to poll"},
