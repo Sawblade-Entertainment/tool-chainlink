@@ -431,7 +431,7 @@ func moveIntoPlace(src, dest string) error {
 	return nil
 }
 
-// chainlinkBinaryName is the file name `chainlink global` installs as.
+// chainlinkBinaryName is the file name `chainlink self-install` installs as.
 func chainlinkBinaryName(goos string) string {
 	if goos == "windows" {
 		return "chainlink.exe"

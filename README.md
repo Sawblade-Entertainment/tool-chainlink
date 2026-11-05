@@ -5,7 +5,7 @@ ChainLink is a tool manager for Roblox development, allowing you to easily manag
 ## Installation
 
 ### From Releases
-Download the binary for your platform from the [Releases](https://github.com/Sawblade-Entertainment/ChainLink/releases) page.
+Download the binary for your platform from the [Releases](https://github.com/Sawblade-Entertainment/tool-chainlink/releases) page.
 
 ### From Source
 ```bash
@@ -64,17 +64,17 @@ The `chain.toml` file is structured as follows:
 
 ```toml
 [Package]
-Name = "MyProject"
-Version = "1.0.0"
-License = "MIT"
-Description = "A great project"
-Website = "https://example.com"
+  Name = "MyProject"
+  Version = "1.0.0"
+  License = "MIT"
+  Description = "A great project"
+  Website = "https://example.com"
 
 [Tools]
-selene = "Kampfkarren/selene@0.32.0"
+  selene = "Kampfkarren/selene@0.32.0"
 
 [Packages]
-razorinput = "vibeonline/razorinput@0.1.0"
+  razorinput = "vibeonline/razorinput@0.1.4"
 ```
 
 ## Tool Proxying

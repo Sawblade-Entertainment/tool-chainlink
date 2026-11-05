@@ -437,10 +437,10 @@ func TestHandleRemoveWithoutTables(t *testing.T) {
 
 func TestProjectRegistry(t *testing.T) {
 	tests := []struct {
-		name  string
-		chain string
+		name   string
+		chain  string
 		legacy string
-		want  string
+		want   string
 	}{
 		{"chain lowercase", "[package]\nregistry = \"https://github.com/a/chain\"\n", "", "https://github.com/a/chain"},
 		{"chain capitalized", "[Package]\nregistry = \"https://github.com/a/cap\"\n", "", "https://github.com/a/cap"},

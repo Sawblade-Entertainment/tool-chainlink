@@ -4,7 +4,7 @@ ChainLink can be installed either from pre-built releases or by building from so
 
 ## From Releases
 
-1. Navigate to the [Releases](https://github.com/Sawblade-Entertainment/ChainLink/releases) page.
+1. Navigate to the [Releases](https://github.com/Sawblade-Entertainment/tool-chainlink/releases) page.
 2. Download the binary corresponding to your operating system and architecture (e.g., `chainlink-darwin-arm64` for Apple Silicon Macs).
 3. Run the binary directly from your downloads folder. As long as the binary name retains its release prefix (e.g., `chainlink-darwin-arm64`), it will automatically trigger a global installation.
 
@@ -20,8 +20,8 @@ This will install the binary to `~/.chainlink/bin/chainlink` and attempt to upda
 If you have Go installed on your system, you can build ChainLink directly from the repository:
 
 ```bash
-git clone https://github.com/Sawblade/ChainLink.git
-cd ChainLink
+git clone https://github.com/Sawblade-Entertainment/tool-chainlink.git
+cd tool-chainlink
 make        # runs tests, then builds all platforms into bin/
 ```
 

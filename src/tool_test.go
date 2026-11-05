@@ -1018,7 +1018,7 @@ func TestToolSymlinkTargetPrefersStable(t *testing.T) {
 	}
 }
 
-// Regression: on Windows `chainlink global` installs chainlink.exe, so looking
+// Regression: on Windows `chainlink self-install` installs chainlink.exe, so looking
 // for bin/chainlink never found the stable binary.
 func TestChainlinkBinaryName(t *testing.T) {
 	if got := chainlinkBinaryName("windows"); got != "chainlink.exe" {
