@@ -1114,13 +1114,13 @@ func TestRunToolBySpecVPrefixedDir(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "ran")
 	cliWriteFile(t, filepath.Join(toolDir, "stylua"), "#!/bin/sh\necho \"$@\" > \""+out+"\"\n", 0755)
 
-	if err := runToolBySpec("JohnnyMorganz/StyLua@0.20.0", []string{"--check", "src"}); err != nil {
+	if err := runToolBySpec("JohnnyMorganz/StyLua@0.20.0", "", []string{"--check", "src"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := cliReadFile(t, out); got != "--check src\n" {
 		t.Fatalf("tool args = %q", got)
 	}
-	if err := runToolBySpec("JohnnyMorganz/StyLua", nil); err == nil {
+	if err := runToolBySpec("JohnnyMorganz/StyLua", "", nil); err == nil {
 		t.Fatal("expected invalid spec error")
 	}
 }
@@ -1205,7 +1205,7 @@ func TestRunToolBySpecRejectsTraversal(t *testing.T) {
 	keep := filepath.Join(home, "keep.txt")
 	cliWriteFile(t, keep, "x", 0644)
 	for _, spec := range []string{"x/x@../../..", "x/x@..", "x/x@a/b", `x/x@a\b`, "../x@1.0"} {
-		if err := runToolBySpec(spec, nil); err == nil {
+		if err := runToolBySpec(spec, "", nil); err == nil {
 			t.Errorf("runToolBySpec(%q) succeeded", spec)
 		}
 	}

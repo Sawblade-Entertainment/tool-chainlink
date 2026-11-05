@@ -127,6 +127,20 @@ func toolInstallDir(home, key, tag string) (dir string, installed bool) {
 	return dir, false
 }
 
+// installedToolDir is toolInstallDir, but also finds installs from older
+// versions of ChainLink, which named the directory after the chain.toml alias
+// instead of the repo.
+func installedToolDir(home string, s toolSpec, alias string) (dir string, installed bool) {
+	dir, installed = toolInstallDir(home, s.Name, s.Tag)
+	if installed || alias == "" || alias == s.Name {
+		return dir, installed
+	}
+	if legacy, ok := toolInstallDir(home, alias, s.Tag); ok {
+		return legacy, true
+	}
+	return dir, false
+}
+
 // InstallTool downloads a tool release from GitHub by tag.
 // Format: "owner/repo@tag" (e.g., "Kampfkarren/selene@0.32.0")
 func InstallTool(toolName, spec string) error {
@@ -156,7 +170,7 @@ func InstallToolDir(toolName, spec string) (string, error) {
 	}
 
 	// Check if the tool is already installed (as-is or with 'v' prefix)
-	if dir, ok := toolInstallDir(home, s.Name, s.Tag); ok {
+	if dir, ok := installedToolDir(home, s, toolName); ok {
 		status("Cached", sgrBlue, "%s", spec)
 		if err := linkTool(home, toolName); err != nil {
 			warnf("%v", err)
@@ -314,8 +328,10 @@ func isArchiveName(name string) bool {
 
 // selectAsset picks the release asset for goos/goarch. An OS+arch match wins;
 // otherwise an asset naming only the OS (e.g. a universal macOS binary) is
-// used, as long as it does not name a different arch. Checksums and
-// signatures are ignored, and archives are preferred over other files.
+// used, as long as it does not name a different arch. As a last resort, arm64
+// macOS and Windows accept an amd64 build, which they run under emulation.
+// Checksums and signatures are ignored, and archives are preferred over other
+// files.
 func selectAsset(assets []GitHubAsset, goos, goarch string) (*GitHubAsset, error) {
 	osNames := assetOSAliases[goos]
 	if len(osNames) == 0 {
@@ -326,8 +342,13 @@ func selectAsset(assets []GitHubAsset, goos, goarch string) (*GitHubAsset, error
 		archNames = []string{goarch}
 	}
 
-	exact, osOnly := -1, -1
-	exactArchive, osOnlyArchive := false, false
+	var emulated []string
+	if goarch == "arm64" && (goos == "darwin" || goos == "windows") {
+		emulated = assetArchAliases["amd64"]
+	}
+
+	exact, osOnly, cross := -1, -1, -1
+	exactArchive, osOnlyArchive, crossArchive := false, false, false
 	for i, asset := range assets {
 		name := strings.ToLower(asset.Name)
 		if !containsAny(name, osNames) || hasAnySuffix(name, assetSkipSuffixes) {
@@ -341,6 +362,9 @@ func selectAsset(assets []GitHubAsset, goos, goarch string) (*GitHubAsset, error
 			continue
 		}
 		if namesOtherArch(name, goarch) {
+			if containsAny(name, emulated) && (cross < 0 || (archive && !crossArchive)) {
+				cross, crossArchive = i, archive
+			}
 			continue
 		}
 		if osOnly < 0 || (archive && !osOnlyArchive) {
@@ -353,6 +377,8 @@ func selectAsset(assets []GitHubAsset, goos, goarch string) (*GitHubAsset, error
 		return &assets[exact], nil
 	case osOnly >= 0:
 		return &assets[osOnly], nil
+	case cross >= 0:
+		return &assets[cross], nil
 	}
 	return nil, fmt.Errorf("no suitable asset found for %s/%s", goos, goarch)
 }
@@ -405,6 +431,14 @@ func moveIntoPlace(src, dest string) error {
 	return nil
 }
 
+// chainlinkBinaryName is the file name `chainlink global` installs as.
+func chainlinkBinaryName(goos string) string {
+	if goos == "windows" {
+		return "chainlink.exe"
+	}
+	return "chainlink"
+}
+
 // linkTool points ~/.chainlink/bin/<toolName> at the chainlink binary, which
 // proxies the call to the installed tool.
 func linkTool(home, toolName string) error {
@@ -424,7 +458,7 @@ func linkTool(home, toolName string) error {
 // binary's path is resolved, because when invoked through a tool symlink
 // os.Executable can return the symlink itself.
 func toolSymlinkTarget(home string) (string, error) {
-	stable := filepath.Join(home, ".chainlink", "bin", "chainlink")
+	stable := filepath.Join(home, ".chainlink", "bin", chainlinkBinaryName(runtime.GOOS))
 	if info, err := os.Lstat(stable); err == nil && info.Mode().IsRegular() {
 		return stable, nil
 	}

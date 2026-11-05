@@ -541,12 +541,7 @@ func (s *Server) fileEvent(rel string, op string) (Event, bool) {
 		source = parseScript(cfg, source, rel)
 	}
 	if strings.HasSuffix(lower, ".json") {
-		var parsed any
-		if err := json.Unmarshal(data, &parsed); err != nil {
-			source = "return " + source
-		} else {
-			source = "return " + jsonToLuau(parsed)
-		}
+		source = jsonSource(data)
 	}
 	if strings.HasSuffix(lower, ".rbxmx") || strings.HasSuffix(lower, ".rbxm") {
 		// Model bytes are not script text: base64 preserves binary .rbxm bytes

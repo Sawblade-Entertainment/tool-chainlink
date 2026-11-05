@@ -22,9 +22,14 @@ const (
 	sgrCyan   = "36"
 )
 
-// colorStdout and colorStderr say whether each stream gets ANSI styling. They
-// are decided once at startup; tests leave them false so output stays plain.
-var colorStdout, colorStderr = detectColor(os.Stdout), detectColor(os.Stderr)
+// uiOut is where status lines and prompts go: stdout, except in tool-proxy
+// mode, where stdout belongs to the tool. colorOut and colorStderr say whether
+// uiOut and stderr get ANSI styling; tests leave them false so output stays plain.
+var (
+	uiOut       io.Writer = os.Stdout
+	colorOut              = detectColor(os.Stdout)
+	colorStderr           = detectColor(os.Stderr)
+)
 
 // detectColor follows the NO_COLOR / FORCE_COLOR conventions, and otherwise
 // colors only real terminals (enabling VT processing on Windows consoles).
@@ -49,18 +54,18 @@ func paint(enabled bool, s string, codes ...string) string {
 	return "\x1b[" + strings.Join(codes, ";") + "m" + s + "\x1b[0m"
 }
 
-// Stdout styling shorthands.
-func bold(s string) string  { return paint(colorStdout, s, sgrBold) }
-func dim(s string) string   { return paint(colorStdout, s, sgrDim) }
-func cyan(s string) string  { return paint(colorStdout, s, sgrCyan) }
-func green(s string) string { return paint(colorStdout, s, sgrGreen) }
+// Styling shorthands for text written to uiOut.
+func bold(s string) string  { return paint(colorOut, s, sgrBold) }
+func dim(s string) string   { return paint(colorOut, s, sgrDim) }
+func cyan(s string) string  { return paint(colorOut, s, sgrCyan) }
+func green(s string) string { return paint(colorOut, s, sgrGreen) }
 
 // statusVerbWidth right-aligns status verbs so messages line up, cargo-style.
 const statusVerbWidth = 12
 
 // status prints "   Downloading selene 0.32.0" with the verb bold and colored.
 func status(verb, color, format string, args ...any) {
-	fmt.Fprintf(os.Stdout, "%s %s\n", statusVerb(colorStdout, verb, color), fmt.Sprintf(format, args...))
+	fmt.Fprintf(uiOut, "%s %s\n", statusVerb(colorOut, verb, color), fmt.Sprintf(format, args...))
 }
 
 func statusVerb(enabled bool, verb, color string) string {
@@ -74,7 +79,7 @@ func warnf(format string, args ...any) {
 
 // hintf prints a dimmed follow-up line, indented under status messages.
 func hintf(format string, args ...any) {
-	fmt.Fprintf(os.Stdout, "%*s %s\n", statusVerbWidth, "", dim(fmt.Sprintf(format, args...)))
+	fmt.Fprintf(uiOut, "%*s %s\n", statusVerbWidth, "", dim(fmt.Sprintf(format, args...)))
 }
 
 // fail prints a red "error:" line to stderr and exits with status 1.
@@ -93,10 +98,12 @@ func usageFail(usage string) {
 	os.Exit(2)
 }
 
-// promptInput and promptIsInteractive are variables so tests can script answers.
+// promptInput and promptIsInteractive are variables so tests can script
+// answers. promptInput is one shared reader so input typed ahead of a later
+// prompt isn't lost in a discarded buffer.
 var (
-	promptInput         io.Reader = os.Stdin
-	promptIsInteractive           = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	promptInput         = bufio.NewReader(os.Stdin)
+	promptIsInteractive = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 )
 
 // errNotInteractive is returned by confirm when nobody can answer the prompt.
@@ -107,10 +114,10 @@ func confirm(question string) (bool, error) {
 	if !promptIsInteractive() {
 		return false, errNotInteractive
 	}
-	fmt.Fprintf(os.Stdout, "%s %s %s ", paint(colorStdout, "?", sgrBold, sgrCyan), bold(question), dim("[Y/n]"))
-	line, err := bufio.NewReader(promptInput).ReadString('\n')
+	fmt.Fprintf(uiOut, "%s %s %s ", paint(colorOut, "?", sgrBold, sgrCyan), bold(question), dim("[Y/n]"))
+	line, err := promptInput.ReadString('\n')
 	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
-		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(uiOut)
 		return false, nil
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {

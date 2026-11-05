@@ -82,7 +82,14 @@ func shellConfigFor(goos, shell, home string) (string, error) {
 		case strings.Contains(name, "zsh"):
 			return filepath.Join(home, ".zshrc"), nil
 		case goos == "darwin" && strings.Contains(name, "bash"):
-			// Terminal.app starts login shells, which read .bash_profile.
+			// Terminal.app starts login shells, which read the first of these
+			// that exists. Creating .bash_profile when the user relies on
+			// .profile would stop .profile from loading.
+			for _, rc := range []string{".bash_profile", ".bash_login", ".profile"} {
+				if p := filepath.Join(home, rc); fileExists(p) {
+					return p, nil
+				}
+			}
 			return filepath.Join(home, ".bash_profile"), nil
 		default:
 			return filepath.Join(home, ".bashrc"), nil
@@ -106,18 +113,38 @@ func pathListContains(pathList, dir string) bool {
 	return false
 }
 
-// mentionsDir reports whether text contains dir as a whole path, so that
-// "/x/.chainlink/bin-old" does not count as "/x/.chainlink/bin".
+// mentionsDir reports whether an rc file already adds dir to PATH: some
+// uncommented line that sets PATH and contains dir as a whole path, so that
+// "/x/.chainlink/bin-old" and "/x/.chainlink/bin/selene" don't count.
 func mentionsDir(text, dir string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || !strings.Contains(line, "PATH") {
+			continue
+		}
+		if lineMentionsDir(line, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func lineMentionsDir(line, dir string) bool {
 	for i := 0; ; {
-		j := strings.Index(text[i:], dir)
+		j := strings.Index(line[i:], dir)
 		if j < 0 {
 			return false
 		}
-		end := i + j + len(dir)
-		if end == len(text) || strings.ContainsRune(":\"'/ \t\r\n;", rune(text[end])) {
+		rest := line[i+j+len(dir):]
+		rest = strings.TrimPrefix(rest, "/") // ".../bin/:$PATH"
+		if rest == "" || strings.ContainsRune(":\"' \t\r;", rune(rest[0])) {
 			return true
 		}
 		i = i + j + 1
 	}
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }

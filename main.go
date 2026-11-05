@@ -113,6 +113,8 @@ func main() {
 		}
 		return
 	case invokeToolProxy:
+		// The tool owns stdout, so ChainLink's own messages go to stderr.
+		uiOut, colorOut = os.Stderr, colorStderr
 		// If the tool ran but returned an exit code, runToolBySpec already exited with it.
 		if err := proxyToTool(invokedAs, os.Args[1:]); err != nil {
 			fail("", err)
@@ -472,7 +474,7 @@ func planDownloads(config ChainLinkConfig, home string) ([]pendingDownload, erro
 		if err != nil {
 			return nil, fmt.Errorf("tool %s: %w", alias, err)
 		}
-		if _, installed := toolInstallDir(home, s.Name, s.Tag); !installed {
+		if _, installed := installedToolDir(home, s, alias); !installed {
 			pending = append(pending, pendingDownload{"tool", spec, "github.com/" + s.Repo})
 		}
 	}
@@ -485,13 +487,13 @@ func confirmDownloads(pending []pendingDownload, assumeYes bool) error {
 	if len(pending) == 0 || assumeYes {
 		return nil
 	}
-	fmt.Println(bold("The following will be downloaded for the first time:"))
+	fmt.Fprintln(uiOut, bold("The following will be downloaded for the first time:"))
 	width := 0
 	for _, p := range pending {
 		width = max(width, len(p.Spec))
 	}
 	for _, p := range pending {
-		fmt.Printf("  %s %-*s  %s\n", cyan(fmt.Sprintf("%-7s", p.Kind)), width, p.Spec, dim("from "+p.Source))
+		fmt.Fprintf(uiOut, "  %s %-*s  %s\n", cyan(fmt.Sprintf("%-7s", p.Kind)), width, p.Spec, dim("from "+p.Source))
 	}
 	ok, err := confirm(fmt.Sprintf("Download %d item(s)?", len(pending)))
 	if errors.Is(err, errNotInteractive) {
@@ -607,11 +609,7 @@ func handleGlobal() error {
 		return fmt.Errorf("failed to create bin directory: %w", err)
 	}
 
-	destName := "chainlink"
-	if runtime.GOOS == "windows" {
-		destName += ".exe"
-	}
-	destPath := filepath.Join(binDir, destName)
+	destPath := filepath.Join(binDir, chainlinkBinaryName(runtime.GOOS))
 
 	// Copy binary to global bin
 	if err := installBinary(exePath, destPath); err != nil {
@@ -847,7 +845,7 @@ func handleLogin(args []string) error {
 
 func promptAPIKey(api string) error {
 	fmt.Printf("Wally requires an API key to publish to %s.\n", bold(api))
-	fmt.Printf("%s %s ", paint(colorStdout, "?", sgrBold, sgrCyan), bold("Enter an API key:"))
+	fmt.Printf("%s %s ", paint(colorOut, "?", sgrBold, sgrCyan), bold("Enter an API key:"))
 
 	var key string
 	if term.IsTerminal(int(os.Stdin.Fd())) {
@@ -944,8 +942,8 @@ func (g githubDeviceFlow) run(api, clientID string) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("  Open %s\n", paint(colorStdout, dc.VerificationURI, sgrBold, sgrCyan))
-	fmt.Printf("  and enter the code %s\n", paint(colorStdout, dc.UserCode, sgrBold, sgrYellow))
+	fmt.Printf("  Open %s\n", paint(colorOut, dc.VerificationURI, sgrBold, sgrCyan))
+	fmt.Printf("  and enter the code %s\n", paint(colorOut, dc.UserCode, sgrBold, sgrYellow))
 	fmt.Println()
 	status("Waiting", sgrCyan, "for GitHub authorization...")
 
@@ -1241,10 +1239,12 @@ func proxyToTool(toolName string, args []string) error {
 	if err != nil {
 		return err
 	}
-	return runToolBySpec(spec, args)
+	return runToolBySpec(spec, toolName, args)
 }
 
-func runToolBySpec(spec string, args []string) error {
+// runToolBySpec runs the tool spec names, installing it first if needed.
+// alias is the name the tool was invoked as, used to find legacy installs.
+func runToolBySpec(spec, alias string, args []string) error {
 	s, err := parseToolSpec(spec)
 	if err != nil {
 		return err
@@ -1256,7 +1256,7 @@ func runToolBySpec(spec string, args []string) error {
 	}
 
 	// Installs are staged and renamed into place, so an existing dir is complete.
-	toolDir, installed := toolInstallDir(home, s.Name, s.Tag)
+	toolDir, installed := installedToolDir(home, s, alias)
 	if !installed {
 		status("Missing", sgrYellow, "%s, installing it first", spec)
 		toolDir, err = InstallToolDir(s.Name, spec)

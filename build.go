@@ -529,10 +529,10 @@ func (b *Builder) sourcePath(p string) string {
 	if b.root == "" {
 		return p
 	}
-	rel, err := filepath.Rel(b.root, p)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !isUnder(b.root, p) {
 		return p
 	}
+	rel, _ := filepath.Rel(b.root, p)
 	return filepath.ToSlash(rel)
 }
 
@@ -650,7 +650,7 @@ func (b *Builder) syncDir(absDir, target, relPrefix string) {
 		}
 	}
 	prefix := relPrefix
-	isPackage := strings.Contains(absDir, filepath.Join(packagesBase(), ""))
+	isPackage := isUnder(packagesBase(), absDir)
 	if rootDir != "" {
 		prefix = rootDir + "/"
 	} else if isPackage {

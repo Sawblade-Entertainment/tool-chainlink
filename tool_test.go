@@ -267,6 +267,12 @@ func TestSelectAsset(t *testing.T) {
 		{"os-only fallback", assets("tool-windows.zip", "tool-macos.zip"), "darwin", "arm64", "tool-macos.zip", false},
 		{"os-only fallback skips other arch", assets("tool-linux-x86_64.zip", "tool-linux.zip"), "linux", "arm64", "tool-linux.zip", false},
 		{"other arch only is an error", assets("tool-linux-x86_64.zip"), "linux", "arm64", "", true},
+		// Regression: Apple Silicon and Windows on ARM run x64 builds under emulation.
+		{"rosetta fallback", assets("tool-x86_64-apple-darwin.tar.gz", "tool-x86_64-linux.zip"), "darwin", "arm64", "tool-x86_64-apple-darwin.tar.gz", false},
+		{"windows arm64 runs x64", assets("tool-windows-x64.zip"), "windows", "arm64", "tool-windows-x64.zip", false},
+		{"native beats emulated", assets("tool-macos-x86_64.zip", "tool-macos-aarch64.zip"), "darwin", "arm64", "tool-macos-aarch64.zip", false},
+		{"universal beats emulated", assets("tool-macos-x86_64.zip", "tool-macos.zip"), "darwin", "arm64", "tool-macos.zip", false},
+		{"no emulation for amd64 hosts", assets("tool-macos-aarch64.zip"), "darwin", "amd64", "", true},
 		{"no match", assets("tool-windows-x86_64.zip"), "linux", "amd64", "", true},
 		{"empty", nil, "linux", "amd64", "", true},
 		{"windows exe", assets("tool-linux-x86_64", "tool-windows-x86_64.exe"), "windows", "amd64", "tool-windows-x86_64.exe", false},
@@ -998,7 +1004,7 @@ func TestToolSymlinkTargetResolvesSelf(t *testing.T) {
 
 func TestToolSymlinkTargetPrefersStable(t *testing.T) {
 	home, _ := installTestHome(t)
-	stable := filepath.Join(home, ".chainlink", "bin", "chainlink")
+	stable := filepath.Join(home, ".chainlink", "bin", chainlinkBinaryName(runtime.GOOS))
 	installWriteFile(t, stable, nil, 0755)
 	got, err := toolSymlinkTarget(home)
 	if err != nil || got != stable {
@@ -1009,6 +1015,67 @@ func TestToolSymlinkTargetPrefersStable(t *testing.T) {
 	}
 	if info, err := os.Lstat(stable); err != nil || !info.Mode().IsRegular() {
 		t.Error("chainlink binary was removed")
+	}
+}
+
+// Regression: on Windows `chainlink global` installs chainlink.exe, so looking
+// for bin/chainlink never found the stable binary.
+func TestChainlinkBinaryName(t *testing.T) {
+	if got := chainlinkBinaryName("windows"); got != "chainlink.exe" {
+		t.Errorf("windows = %q", got)
+	}
+	for _, goos := range []string{"darwin", "linux"} {
+		if got := chainlinkBinaryName(goos); got != "chainlink" {
+			t.Errorf("%s = %q", goos, got)
+		}
+	}
+}
+
+// Regression: creating .bash_profile on macOS stops bash login shells from
+// reading an existing .profile.
+func TestShellConfigForDarwinBashKeepsExistingProfile(t *testing.T) {
+	for _, tt := range []struct {
+		existing []string
+		want     string
+	}{
+		{nil, ".bash_profile"},
+		{[]string{".profile"}, ".profile"},
+		{[]string{".bash_login", ".profile"}, ".bash_login"},
+		{[]string{".bash_profile", ".profile"}, ".bash_profile"},
+	} {
+		home := t.TempDir()
+		for _, f := range tt.existing {
+			installWriteFile(t, filepath.Join(home, f), []byte("# rc\n"), 0644)
+		}
+		got, err := shellConfigFor("darwin", "/bin/bash", home)
+		if err != nil || got != filepath.Join(home, tt.want) {
+			t.Errorf("with %v: shellConfigFor = %q, %v; want %s", tt.existing, got, err, tt.want)
+		}
+	}
+}
+
+// Regression: tools installed by older versions live under the chain.toml
+// alias, not the repo name, and were downloaded again.
+func TestInstalledToolDirLegacyAlias(t *testing.T) {
+	home := t.TempDir()
+	s := toolSpec{Repo: "JohnnyMorganz/StyLua", Name: "StyLua", Tag: "0.20.0"}
+	tools := filepath.Join(home, ".chainlink", "tools")
+
+	if dir, ok := installedToolDir(home, s, "fmt"); ok || dir != filepath.Join(tools, "StyLua", "0.20.0") {
+		t.Fatalf("nothing installed: %q, %v", dir, ok)
+	}
+	legacy := filepath.Join(tools, "fmt", "0.20.0")
+	os.MkdirAll(legacy, 0755)
+	if dir, ok := installedToolDir(home, s, "fmt"); !ok || dir != legacy {
+		t.Errorf("legacy alias dir: %q, %v", dir, ok)
+	}
+	if _, ok := installedToolDir(home, s, ""); ok {
+		t.Error("no alias should not match the legacy dir")
+	}
+	current := filepath.Join(tools, "StyLua", "0.20.0")
+	os.MkdirAll(current, 0755)
+	if dir, ok := installedToolDir(home, s, "fmt"); !ok || dir != current {
+		t.Errorf("current dir should win: %q, %v", dir, ok)
 	}
 }
 
@@ -1074,7 +1141,15 @@ func TestMentionsDir(t *testing.T) {
 		{"export PATH=\"/u/.chainlink/bin:$PATH\"\n", true},
 		{"export PATH=/u/.chainlink/bin", true},
 		{"export PATH=\"/u/.chainlink/bin-old:$PATH\"\n", false},
-		{"/u/.chainlink/binary /u/.chainlink/bin:", true},
+		{"PATH=/u/.chainlink/binary:/u/.chainlink/bin:$PATH", true},
+		{"export PATH=\"/u/.chainlink/bin/:$PATH\"", true},
+		{"  export PATH=$PATH:/u/.chainlink/bin # chainlink", true},
+		{"# export PATH=\"/u/.chainlink/bin:$PATH\"\n", false},
+		{"   #export PATH=/u/.chainlink/bin\n", false},
+		{"alias selene=/u/.chainlink/bin/selene\n", false},
+		{"export PATH=\"/u/.chainlink/bin/selene:$PATH\"", false},
+		{"cd /u/.chainlink/bin\n", false},
+		{"# old\nexport PATH=\"/u/.chainlink/bin:$PATH\"\n", true},
 		{"", false},
 	}
 	for _, tt := range tests {

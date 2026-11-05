@@ -35,9 +35,7 @@ func handleSourcemap(outputPath string) error {
 	}
 
 	for _, inst := range b.top {
-		if node := convertToSourcemapNode(inst); node != nil {
-			rootNode.Children = append(rootNode.Children, node)
-		}
+		rootNode.Children = append(rootNode.Children, convertToSourcemapNode(inst))
 	}
 
 	data, err := json.MarshalIndent(rootNode, "", "  ")
@@ -55,12 +53,7 @@ func handleSourcemap(outputPath string) error {
 	return nil
 }
 
-// convertToSourcemapNode returns nil for embedded prefab items without a
-// name, which luau-lsp could not resolve.
 func convertToSourcemapNode(inst *Instance) *SourcemapNode {
-	if inst.Name == "" && inst.RawXML != "" {
-		return nil
-	}
 	node := &SourcemapNode{
 		Name:      inst.Name,
 		ClassName: inst.Class,
@@ -71,9 +64,7 @@ func convertToSourcemapNode(inst *Instance) *SourcemapNode {
 	}
 
 	for _, child := range inst.Children {
-		if c := convertToSourcemapNode(child); c != nil {
-			node.Children = append(node.Children, c)
-		}
+		node.Children = append(node.Children, convertToSourcemapNode(child))
 	}
 
 	return node

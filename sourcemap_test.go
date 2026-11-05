@@ -15,7 +15,6 @@ func TestConvertToSourcemapNode(t *testing.T) {
 			{Name: "C", Class: "Script", FilePath: "shared/B/C.server.luau"},
 		}},
 		{Name: "Tree", Class: "Model", RawXML: "<Item/>", FilePath: "prefab/Tree.rbxmx"},
-		{RawXML: "<Item/>"}, // unnamed prefab item: dropped
 	}}
 	node := convertToSourcemapNode(tree)
 	if node.FilePaths != nil || len(node.Children) != 3 {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 func uiScriptPrompt(t *testing.T, interactive bool, answer string) {
 	t.Helper()
 	oldIn, oldInteractive := promptInput, promptIsInteractive
-	promptInput = strings.NewReader(answer)
+	promptInput = bufio.NewReader(strings.NewReader(answer))
 	promptIsInteractive = func() bool { return interactive }
 	t.Cleanup(func() { promptInput, promptIsInteractive = oldIn, oldInteractive })
 }
@@ -232,5 +233,31 @@ func TestInstallAllAccepted(t *testing.T) {
 	}
 	if !dirExists(packageInstallDir(home, "sleitnick", "knit", "1.7.0")) {
 		t.Error("package not installed after confirming")
+	}
+}
+
+// Regression: in tool-proxy mode, install progress went to stdout and mixed
+// with the tool's own output.
+func TestStatusWritesToUIOut(t *testing.T) {
+	var buf strings.Builder
+	old := uiOut
+	uiOut = &buf
+	t.Cleanup(func() { uiOut = old })
+
+	status("Downloading", sgrCyan, "%s", "a/b@1.0.0")
+	hintf("note")
+	if got := buf.String(); !strings.Contains(got, "Downloading a/b@1.0.0\n") || !strings.Contains(got, "note\n") {
+		t.Errorf("uiOut = %q", got)
+	}
+}
+
+// Regression: each confirm used a new bufio.Reader, dropping answers that
+// were typed ahead of a later prompt.
+func TestConfirmKeepsTypedAhead(t *testing.T) {
+	uiScriptPrompt(t, true, "y\nn\n")
+	first, _ := confirm("First?")
+	second, err := confirm("Second?")
+	if !first || second || err != nil {
+		t.Errorf("answers = %v, %v, %v; want true, false, nil", first, second, err)
 	}
 }
