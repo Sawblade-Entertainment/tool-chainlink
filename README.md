@@ -28,9 +28,6 @@ chainlink init
 chainlink install
 chainlink install -y
 
-# Install the ChainLink plugin for Roblox Studio
-chainlink plugin
-
 # Add a tool to your project
 # Format: owner/repo@tag (e.g., BurntSushi/toml@v1.6.0)
 chainlink add owner/repo@tag --tool

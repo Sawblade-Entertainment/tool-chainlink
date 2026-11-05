@@ -54,10 +54,7 @@ chainlink remove name
 ## Advanced Commands
 
 ### The Roblox Studio Plugin
-To install the ChainLink plugin for Roblox Studio:
-```bash
-chainlink plugin
-```
+The ChainLink plugin for Roblox Studio is installed by `chainlink self-install`.
 
 ### Serving
 Start the ChainLink server for integrated development:

@@ -37,5 +37,6 @@ This command will:
 1. Create a directory at `~/.chainlink/bin`.
 2. Copy the current binary to that directory.
 3. Attempt to add `~/.chainlink/bin` to your shell configuration file (e.g., `.zshrc` or `.bashrc`).
+4. Install the ChainLink plugin into Roblox Studio's plugins folder.
 
 After running this, restart your terminal or run `source ~/.zshrc` (or the equivalent for your shell) to start using `chainlink` from anywhere.

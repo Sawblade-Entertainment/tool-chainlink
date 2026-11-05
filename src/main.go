@@ -142,10 +142,6 @@ func main() {
 		if err := installAll(assumeYes); err != nil {
 			fail("installing", err)
 		}
-	case "plugin":
-		if err := installPlugin(); err != nil {
-			fail("installing plugin", err)
-		}
 	case "login":
 		if err := handleLogin(os.Args[2:]); err != nil {
 			fail("logging in", err)
@@ -202,11 +198,9 @@ var usageCommands = [][2]string{
 	{"remove <name>", "Remove a tool or package from chain.toml"},
 	{"serve", "Start the live-sync server for the Studio plugin"},
 	{"build <output>", "Build a place (.rbxl/.rbxlx) or src/ as a model (.rbxm/.rbxmx)"},
-	{"sourcemap [-o <file>]", "Write a Rojo-compatible sourcemap"},
-	{"plugin", "Install the ChainLink Studio plugin"},
 	{"login", "Authenticate with a package registry"},
 	{"publish", "Publish this project as a package"},
-	{"self-install", "Install chainlink to ~/.chainlink/bin and add it to PATH"},
+	{"self-install", "Install chainlink to ~/.chainlink/bin, add it to PATH, and install the Studio plugin"},
 	{"help", "Show this help"},
 }
 
@@ -588,6 +582,10 @@ func handleGlobal() error {
 
 	if err := InstallChainlink(); err != nil {
 		warnf("failed to update PATH: %v", err)
+	}
+
+	if err := installPlugin(); err != nil {
+		warnf("failed to install Studio plugin: %v", err)
 	}
 
 	return nil
