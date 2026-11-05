@@ -1,0 +1,175 @@
+# Serialized property types that file data alone cannot tell apart:
+#   - the binary format stores ContentId, BinaryString and ProtectedString
+#     all as String, and NetAssetRef as SharedString;
+#   - XML stores BrickColor as <int>, and an empty Content and an empty
+#     ContentId both as <Content><null/></Content>.
+#
+# String properties are listed too: a binary String property that is not
+# listed anywhere is hidden from reflection, and is taken as a ContentId when
+# its value is an asset URL.
+#
+# Each line is "Property Type", or "Class.Property Type" for names whose type
+# differs between classes (every class that has the property is listed,
+# inherited or not).
+#
+# Generated from Studio's ReflectionService (serialized properties only). The
+# hidden properties at the end are not reported by ReflectionService.
+
+ActionText string
+ActivatedCursorIcon ContentId
+AdorneeName string
+Album string
+AlignOrientation.Color BrickColor
+AlignPosition.Color BrickColor
+AngularVelocity.Color BrickColor
+AnimationConstraint.Color BrickColor
+AnimationId ContentId
+Artist string
+Asset ContentId
+AudioInteractionGroup string
+BallSocketConstraint.Color BrickColor
+BinaryStringValue.Value BinaryString
+BottomImage ContentId
+BrickColorValue.Value BrickColor
+CageMeshId ContentId
+CameraButtonIcon ContentId
+ClassCategory string
+CollisionGroup string
+Constraint string
+Constraint.Color BrickColor
+ContentId string
+Contents string
+CursorIcon ContentId
+CylindricalConstraint.Color BrickColor
+DefaultName string
+Description string
+DisplayImage Content
+DisplayName string
+EditorType string
+EmissiveMaskContent Content
+EmotesDataInternal string
+EquippedEmotesDataInternal string
+FFlag string
+FallbackImage ContentId
+FileMesh.MeshId ContentId
+FlipbookIncompatible string
+Generic BinaryString
+GoodbyeDialog string
+Graphic ContentId
+HeadShape string
+HingeConstraint.Color BrickColor
+HoverImage ContentId
+Icon ContentId
+Image ContentId
+InitialPrompt string
+InputPinData BinaryString
+Interface string
+InviteMessageId string
+KeyframeMarker.Value string
+Label string
+LaunchData string
+LineForce.Color BrickColor
+LinearVelocity.Color BrickColor
+LinkedSource ContentId
+MaterialColors BinaryString
+MaterialVariantSerialized string
+MeshPart.MeshId ContentId
+MidImage ContentId
+MoonTextureId ContentId
+MouseIcon ContentId
+Name string
+NodeId string
+ObjectText string
+OpenTypeFeatures string
+OutputPath string
+PackageIdSerialize ContentId
+PantsTemplate ContentId
+PatchId string
+PhysicsGrid BinaryString
+PlaceholderText string
+Plane.Color BrickColor
+PlaneConstraint.Color BrickColor
+PreferredParent string
+PressedImage ContentId
+PrimaryAlias string
+PrismaticConstraint.Color BrickColor
+PromptMessage string
+PropertiesSerialize BinaryString
+PropertyTransitionsSerialize BinaryString
+ReferenceCageMeshContent Content
+ReferenceMeshId ContentId
+ReservedServerAccessCode string
+ReservedServerId string
+ResponseDialog string
+RigidConstraint.Color BrickColor
+RodConstraint.Color BrickColor
+RopeConstraint.Color BrickColor
+RotateScaleDeformationMap Content
+ScaleOnlyDeformationMap Content
+ScriptContext string
+ScriptGuid string
+SearchKeyword string
+SecondaryAlias string
+Selector string
+SerializedDefaultAttributes BinaryString
+ServerInstanceId string
+ShirtTemplate ContentId
+SkinColor BrickColor
+SkyboxBk ContentId
+SkyboxDn ContentId
+SkyboxFt ContentId
+SkyboxLf ContentId
+SkyboxRt ContentId
+SkyboxUp ContentId
+SliderScaling string
+SlidingBallConstraint.Color BrickColor
+SmoothGrid BinaryString
+SolidMeshHolder NetAssetRef
+SoundId ContentId
+SourceLocaleId string
+SourceName string
+SpecialMesh.MeshId ContentId
+SpringConstraint.Color BrickColor
+StringValue.Value string
+SunTextureId ContentId
+SystemPrompt string
+Tag string
+TargetName string
+TargetPath string
+TeamColor BrickColor
+Text string
+Texture ContentId
+TextureContent Content
+TextureID ContentId
+TextureId ContentId
+TexturePack ContentId
+Ticket string
+TimeOfDay string
+Title string
+ToolTip string
+TopImage ContentId
+Torque.Color BrickColor
+TorsionSpringConstraint.Color BrickColor
+TransitionId string
+UniversalConstraint.Color BrickColor
+UserDialog string
+ValuesAndTimes BinaryString
+VectorForce.Color BrickColor
+Video ContentId
+VideoContent Content
+VipServerId string
+VoiceId string
+label BinaryString
+name BinaryString
+parent BinaryString
+postTransform BinaryString
+preTransform BinaryString
+transform BinaryString
+
+# Hidden properties.
+AttributesSerialize BinaryString
+Source ProtectedString
+SurfaceAppearance.ColorMap ContentId
+SurfaceAppearance.MetalnessMap ContentId
+SurfaceAppearance.NormalMap ContentId
+SurfaceAppearance.RoughnessMap ContentId

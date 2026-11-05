@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"unsafe"
@@ -72,7 +73,7 @@ func buildSource(tb testing.TB, inst *Instance) string {
 	if !ok {
 		tb.Fatalf("%s (%s) has no Source", inst.Name, inst.Class)
 	}
-	return p.Value
+	return string(p.Value.(ProtectedString))
 }
 
 // buildXItem / buildXRoot decode the subset of the rbxlx format we emit.
@@ -115,6 +116,15 @@ type buildXRoot struct {
 		MD5   string `xml:"md5,attr"`
 		Value string `xml:",chardata"`
 	} `xml:"SharedStrings>SharedString"`
+}
+
+func mustRead(tb testing.TB, path string) []byte {
+	tb.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return data
 }
 
 func buildParse(tb testing.TB, data []byte) buildXRoot {
@@ -268,140 +278,6 @@ func TestCDATARoundTrip(t *testing.T) {
 	}
 }
 
-// --- prefab extraction ---
-
-func TestExtractItems(t *testing.T) {
-	tests := []struct {
-		name    string
-		in      string
-		want    []string
-		wantErr bool
-	}{
-		{
-			name: "single",
-			in:   `<roblox><Item class="Part"><Properties/></Item></roblox>`,
-			want: []string{`<Item class="Part"><Properties/></Item>`},
-		},
-		{
-			name: "multiple",
-			in:   "<roblox>\n<Item class=\"A\"></Item>\n<Item class=\"B\"></Item>\n</roblox>",
-			want: []string{`<Item class="A"></Item>`, `<Item class="B"></Item>`},
-		},
-		{
-			name: "nested returns outer only",
-			in:   `<roblox><Item class="A"><Item class="B"><Item class="C"></Item></Item></Item></roblox>`,
-			want: []string{`<Item class="A"><Item class="B"><Item class="C"></Item></Item></Item>`},
-		},
-		{
-			name: "self closing",
-			in:   `<roblox><Item class="A"/></roblox>`,
-			want: []string{`<Item class="A"/>`},
-		},
-		{
-			name: "attribute with gt",
-			in:   `<roblox><Item class="a>b" referent="x>y"><Properties/></Item></roblox>`,
-			want: []string{`<Item class="a>b" referent="x>y"><Properties/></Item>`},
-		},
-		{name: "no items", in: `<roblox><Other/></roblox>`, wantErr: true},
-		{name: "malformed", in: `<roblox><Item class="A"></roblox>`, wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := extractItems([]byte(tt.in))
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got %q", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
-			for _, s := range got {
-				if !strings.Contains(tt.in, s) || !strings.HasPrefix(s, "<Item") {
-					t.Errorf("%q is not an <Item substring of the input", s)
-				}
-			}
-		})
-	}
-}
-
-func TestExtractItemsLargeIsExactSubstrings(t *testing.T) {
-	doc := buildRbxmx(50)
-	items, err := extractItems([]byte(doc))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 50 {
-		t.Fatalf("got %d items, want 50", len(items))
-	}
-	for _, s := range items {
-		if !strings.HasPrefix(s, "<Item") || !strings.HasSuffix(s, "</Item>") || !strings.Contains(doc, s) {
-			t.Fatalf("bad item slice %q", s)
-		}
-	}
-}
-
-func TestExtractSharedStrings(t *testing.T) {
-	doc := `<roblox>
-<Item class="Part"><Properties><SharedString name="X">outside</SharedString></Properties></Item>
-<SharedString md5="stray">ignored</SharedString>
-<SharedStrings>
-	<SharedString md5="a">AAA</SharedString>
-	<SharedString>no md5</SharedString>
-	<SharedString md5="b">B&amp;B</SharedString>
-</SharedStrings>
-</roblox>`
-	got := map[string]string{}
-	if err := extractSharedStrings([]byte(doc), got); err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]string{"a": "AAA", "b": "B&B"}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("got %v, want %v", got, want)
-	}
-
-	if err := extractSharedStrings([]byte(`<roblox><SharedStrings><SharedString md5="a">x</roblox>`), map[string]string{}); err == nil {
-		t.Error("expected error for malformed XML")
-	}
-}
-
-func TestScanModelNamesAndRefs(t *testing.T) {
-	items, refs, err := scanModel([]byte(buildPrefab), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 1 || items[0].Class != "Model" || items[0].Name != "Tree" {
-		t.Fatalf("items = %+v", items)
-	}
-	if fmt.Sprint(refs) != "[RBXP1 RBXP2]" {
-		t.Errorf("refs = %v", refs)
-	}
-	// A nested Item's Name must not override the top-level one.
-	doc := `<roblox><Item class="Folder"><Item class="Part"><Properties><string name="Name">Inner</string></Properties></Item></Item></roblox>`
-	items, _, err = scanModel([]byte(doc), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if items[0].Name != "" || items[0].Class != "Folder" {
-		t.Errorf("items = %+v", items)
-	}
-}
-
-func TestRawStartTag(t *testing.T) {
-	data := []byte(`xx<Item class="a">body`)
-	end := int64(strings.Index(string(data), ">") + 1)
-	if got := string(rawStartTag(data, end)); got != `<Item class="a">` {
-		t.Errorf("got %q", got)
-	}
-	if got := rawStartTag([]byte(`no tag here`), 5); got != nil {
-		t.Errorf("got %q, want nil", got)
-	}
-}
-
 // --- Builder tree ---
 
 func TestResolveTargetAndPlace(t *testing.T) {
@@ -463,7 +339,7 @@ func TestSetSource(t *testing.T) {
 	s := &Instance{Class: "Script"}
 	setSource(s, "one")
 	setSource(s, "two")
-	if s.Class != "Script" || len(s.Props) != 1 || s.Props[0].Value != "two" || s.Props[0].Type != "ProtectedString" {
+	if s.Class != "Script" || len(s.Props) != 1 || s.Props[0].Value != ProtectedString("two") {
 		t.Errorf("props = %+v class %q", s.Props, s.Class)
 	}
 }
@@ -552,9 +428,9 @@ func TestBuildGolden(t *testing.T) {
 	m := b.place("ReplicatedStorage", []string{"lib", "Mod"}, "ModuleScript")
 	setSource(m, "return \"]]>\"\x00 & <x>")
 	sv := b.place("ReplicatedStorage", []string{"lib", "Note"}, "StringValue")
-	setProp(sv, Property{Name: "Value", Type: "string", Value: "a<b"})
+	setProp(sv, "Value", String("a<b"))
 
-	got := string(b.build())
+	got := string(b.encode(".rbxlx"))
 	want := `<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
 	<Item class="ReplicatedStorage" referent="RBX00000000000000000000000000000001">
 		<Properties>
@@ -591,29 +467,28 @@ func TestBuildGolden(t *testing.T) {
 	}
 }
 
-func TestBuildRawXMLAndSharedStrings(t *testing.T) {
+func TestBuildSharedStringsDeterministic(t *testing.T) {
 	b := NewBuilder(defaultConfig(), "")
 	ss := b.service("ServerStorage")
-	raw := `<Item class="Part" referent="RBXraw"><Properties><string name="Name">P</string></Properties></Item>`
-	ss.Children = append(ss.Children, &Instance{RawXML: raw, Name: "P", Class: "Part"})
-	for _, k := range []string{"zz", "aa", "mm", "bb"} {
-		b.sharedStrings[k] = "v-" + k
+	for _, v := range []string{"zz", "aa", "mm", "bb", "aa"} {
+		ss.Children = append(ss.Children, &Instance{Class: "Part", Name: v, Props: []Property{{"PhysicsData", SharedString("v-" + v)}}})
 	}
-	out := b.build()
-	if !bytes.Contains(out, []byte(raw+"\n")) {
-		t.Error("RawXML not emitted verbatim")
-	}
+	out := b.encode(".rbxlx")
 	root := buildParse(t, out)
-	var order []string
+	if len(root.Shared) != 4 {
+		t.Errorf("shared strings = %+v", root.Shared)
+	}
+	var keys []string
 	for _, s := range root.Shared {
-		order = append(order, s.MD5+"="+s.Value)
+		keys = append(keys, s.MD5)
 	}
-	if got := strings.Join(order, ","); got != "aa=v-aa,bb=v-bb,mm=v-mm,zz=v-zz" {
-		t.Errorf("shared strings order = %s", got)
+	if !sort.StringsAreSorted(keys) {
+		t.Errorf("shared strings not sorted: %v", keys)
 	}
-	// Reproducible across builds.
+	// Reproducible across builds, in both formats.
+	bin := b.encode(".rbxl")
 	for i := 0; i < 20; i++ {
-		if !bytes.Equal(b.build(), out) {
+		if !bytes.Equal(b.encode(".rbxlx"), out) || !bytes.Equal(b.encode(".rbxl"), bin) {
 			t.Fatal("build output is not deterministic")
 		}
 	}
@@ -715,10 +590,14 @@ func TestSyncDirFileKinds(t *testing.T) {
 	buildWriteFile(t, root, "shared/Data.json", `{"k": [1, true, null]}`)
 	buildWriteFile(t, root, "shared/Bad.json", `{not json`)
 	buildWriteFile(t, root, "shared/Note.txt", "hello <world>")
-	buildWriteFile(t, root, "shared/Bin.rbxm", "\x00binary")
+	buildWriteFile(t, root, "shared/Broken.rbxm", "\x00binary")
 	buildWriteFile(t, root, "shared/Skip.png", "x")
+	buildWriteFile(t, root, "shared/Lamp.rbxm", string(encodeBinary(&rbxFile{Roots: []*Instance{
+		{Class: "PointLight", Name: "Light", Props: []Property{{"Brightness", Float32(2)}}},
+	}}, false)))
 	buildWriteFile(t, root, "prefab/Trees.rbxmx", buildPrefab)
 	buildWriteFile(t, root, "prefab/Nested/Rock.rbxmx", `<roblox><Item class="Part" referent="RBXR"><Properties/></Item></roblox>`)
+	buildWriteFile(t, root, "prefab/Pair.rbxmx", `<roblox><Item class="Part" referent="A"/><Item class="Part" referent="B"/></roblox>`)
 	b.populatePlace()
 
 	data := buildFind(t, b.top, "ReplicatedStorage", "shared", "Data")
@@ -731,7 +610,7 @@ func TestSyncDirFileKinds(t *testing.T) {
 
 	// Regression: .txt used to be skipped as "unsupported class".
 	note := buildFind(t, b.top, "ReplicatedStorage", "shared", "Note")
-	if v, ok := buildProp(note, "Value"); note.Class != "StringValue" || !ok || v.Value != "hello <world>" || v.Type != "string" {
+	if note.Class != "StringValue" || note.prop("Value") != String("hello <world>") {
 		t.Errorf("Note = %+v", note)
 	}
 	if note.FilePath != "shared/Note.txt" {
@@ -739,27 +618,74 @@ func TestSyncDirFileKinds(t *testing.T) {
 	}
 
 	for _, c := range buildFind(t, b.top, "ReplicatedStorage", "shared").Children {
-		if c.Name == "Bin" || c.Name == "Skip" {
+		if c.Name == "Broken" || c.Name == "Skip" {
 			t.Errorf("%s should have been skipped", c.Name)
 		}
 	}
 
-	tree := buildFind(t, b.top, "ServerStorage", "Tree")
-	if tree.Class != "Model" || tree.FilePath != "prefab/Trees.rbxmx" || !strings.HasPrefix(tree.RawXML, `<Item class="Model" referent="RBXP1">`) {
+	// Models are named after their file, whatever their root is called.
+	tree := buildFind(t, b.top, "ServerStorage", "Trees")
+	if tree.Class != "Model" || tree.FilePath != "prefab/Trees.rbxmx" {
 		t.Errorf("prefab = %+v", tree)
 	}
-	// Unnamed prefab items fall back to the file stem.
-	if rock := buildFind(t, b.top, "ServerStorage", "Nested", "Rock"); rock.Class != "Part" || rock.RawXML == "" {
+	if trunk := buildFind(t, b.top, "ServerStorage", "Trees", "Trunk"); trunk.Class != "Part" || trunk.FilePath != "" {
+		t.Errorf("trunk = %+v", trunk)
+	}
+	if rock := buildFind(t, b.top, "ServerStorage", "Nested", "Rock"); rock.Class != "Part" {
 		t.Errorf("rock = %+v", rock)
 	}
-	if b.sharedStrings["abc"] != "ZGF0YQ==" {
-		t.Errorf("shared strings = %v", b.sharedStrings)
+	// Several top-level instances are wrapped in a Folder.
+	if pair := buildFind(t, b.top, "ServerStorage", "Pair"); pair.Class != "Folder" || len(pair.Children) != 2 {
+		t.Errorf("pair = %+v", pair)
+	}
+	// Binary models are embedded too.
+	lamp := buildFind(t, b.top, "ReplicatedStorage", "shared", "Lamp")
+	if lamp.Class != "PointLight" || lamp.prop("Brightness") != Float32(2) || lamp.FilePath != "shared/Lamp.rbxm" {
+		t.Errorf("lamp = %+v", lamp)
+	}
+	if b.readErrs != 0 {
+		t.Errorf("readErrs = %d; a broken model should only be skipped", b.readErrs)
+	}
+}
+
+// A model file merges with a folder of the same name, and an init model
+// becomes its folder, keeping the folder's other files as children.
+func TestSyncDirModelMerges(t *testing.T) {
+	root, b := buildProject(t)
+	buildWriteFile(t, root, "shared/Car.rbxmx", `<roblox><Item class="Model" referent="M"><Properties>
+		<Ref name="PrimaryPart">P</Ref></Properties>
+		<Item class="Part" referent="P"><Properties><string name="Name">Body</string></Properties></Item>
+		<Item class="ObjectValue" referent="O"><Properties><string name="Name">Owner</string><Ref name="Value">M</Ref></Properties></Item>
+	</Item></roblox>`)
+	buildWriteFile(t, root, "shared/Car/Drive.server.luau", "print('vroom')")
+	buildWriteFile(t, root, "shared/Gun/init.rbxmx", `<roblox><Item class="Tool" referent="T"><Properties><bool name="CanBeDropped">false</bool></Properties></Item></roblox>`)
+	buildWriteFile(t, root, "shared/Gun/Fire.luau", "return 1")
+	b.populatePlace()
+
+	car := buildFind(t, b.top, "ReplicatedStorage", "shared", "Car")
+	if car.Class != "Model" || car.FilePath != "shared/Car.rbxmx" {
+		t.Errorf("car = %s %q", car.Class, car.FilePath)
+	}
+	var names []string
+	for _, c := range car.Children {
+		names = append(names, c.Name)
+	}
+	if strings.Join(names, ",") != "Body,Owner,Drive" {
+		t.Errorf("car children = %v", names)
+	}
+	// Refs to the model root now point at the merged instance.
+	if owner := buildFind(t, b.top, "ReplicatedStorage", "shared", "Car", "Owner"); owner.prop("Value") != (Ref{car}) {
+		t.Errorf("Owner.Value = %#v", owner.prop("Value"))
+	}
+	if car.prop("PrimaryPart") != (Ref{buildFind(t, b.top, "ReplicatedStorage", "shared", "Car", "Body")}) {
+		t.Errorf("PrimaryPart = %#v", car.prop("PrimaryPart"))
 	}
 
-	root2 := buildParse(t, b.build())
-	if len(root2.Shared) != 1 {
-		t.Errorf("shared strings in output = %+v", root2.Shared)
+	gun := buildFind(t, b.top, "ReplicatedStorage", "shared", "Gun")
+	if gun.Class != "Tool" || gun.prop("CanBeDropped") != Bool(false) || gun.FilePath != "shared/Gun/init.rbxmx" {
+		t.Errorf("gun = %+v", gun)
 	}
+	buildFind(t, b.top, "ReplicatedStorage", "shared", "Gun", "Fire")
 }
 
 func TestSyncDirPackagesNotParsed(t *testing.T) {
@@ -801,11 +727,11 @@ func TestSyncDirNamesOnly(t *testing.T) {
 	if n := buildFind(t, b.top, "ReplicatedStorage", "shared", "N"); n.Class != "StringValue" || len(n.Props) != 0 {
 		t.Errorf("N = %+v", n)
 	}
-	if tree := buildFind(t, b.top, "ServerStorage", "Tree"); tree.RawXML != "" || tree.Class != "Model" {
+	if tree := buildFind(t, b.top, "ServerStorage", "Trees"); len(tree.Props) != 0 || tree.Class != "Model" {
 		t.Errorf("tree = %+v", tree)
 	}
-	if len(b.sharedStrings) != 0 {
-		t.Errorf("shared strings collected in namesOnly mode: %v", b.sharedStrings)
+	if trunk := buildFind(t, b.top, "ServerStorage", "Trees", "Trunk"); trunk.Class != "Part" {
+		t.Errorf("trunk = %+v", trunk)
 	}
 }
 
@@ -848,6 +774,8 @@ func TestSyncModelDir(t *testing.T) {
 	buildWriteFile(t, dir, "Folder/Text.txt", "words")
 	buildWriteFile(t, dir, "Folder/Tree.rbxmx", buildPrefab)
 	buildWriteFile(t, dir, "Folder/Bin.rbxm", "x")
+	buildWriteFile(t, dir, "Folder/Sub/init.rbxmx", `<roblox><Item class="Configuration" referent="C"/></roblox>`)
+	buildWriteFile(t, dir, "Folder/Sub/Leaf.luau", "return 1")
 	buildWriteFile(t, dir, "Folder/img.png", "x")
 
 	b := NewBuilder(defaultConfig(), dir)
@@ -877,27 +805,40 @@ func TestSyncModelDir(t *testing.T) {
 	if txt := buildFind(t, b.top, "Model", "Folder", "Text"); txt.Class != "StringValue" {
 		t.Errorf("Text class = %q", txt.Class)
 	}
-	if tree := buildFind(t, b.top, "Model", "Folder", "Tree"); tree.RawXML == "" {
-		t.Error("prefab not embedded")
+	if tree := buildFind(t, b.top, "Model", "Folder", "Tree"); tree.Class != "Model" || len(tree.Children) != 1 {
+		t.Errorf("prefab = %+v", tree)
+	}
+	if sub := buildFind(t, b.top, "Model", "Folder", "Sub"); sub.Class != "Configuration" || len(sub.Children) != 1 {
+		t.Errorf("init model = %+v", sub)
 	}
 	for _, c := range buildFind(t, b.top, "Model", "Folder").Children {
 		if c.Name == "Bin" || c.Name == "img" || c.Name == "Bin.rbxm" || c.Name == "img.png" {
 			t.Errorf("unsupported file %q not skipped", c.Name)
 		}
 	}
-	buildParse(t, b.build())
+	buildParse(t, b.encode(".rbxmx"))
 }
 
-func TestDuplicatePrefabReferentsStillBuild(t *testing.T) {
+// Prefabs saved from Studio reuse the same referents; each must keep its own Refs.
+func TestDuplicatePrefabReferents(t *testing.T) {
 	root, b := buildProject(t)
-	buildWriteFile(t, root, "prefab/A/Tree.rbxmx", buildPrefab)
-	buildWriteFile(t, root, "prefab/B/Tree.rbxmx", buildPrefab)
+	const prefab = `<roblox><Item class="Model" referent="RBX1"><Properties><Ref name="PrimaryPart">RBX2</Ref></Properties>
+		<Item class="Part" referent="RBX2"><Properties><string name="Name">Main</string></Properties></Item></Item></roblox>`
+	buildWriteFile(t, root, "prefab/A.rbxmx", prefab)
+	buildWriteFile(t, root, "prefab/B.rbxmx", prefab)
 	b.populatePlace()
-	if len(b.prefabRefs) != 2 {
-		t.Errorf("prefabRefs = %v", b.prefabRefs)
+	for _, ext := range []string{".rbxlx", ".rbxl"} {
+		f, err := decodeRobloxFile(b.encode(ext))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"A", "B"} {
+			m := buildFind(t, f.Roots, "ServerStorage", name)
+			if m.prop("PrimaryPart") != (Ref{buildFind(t, f.Roots, "ServerStorage", name, "Main")}) {
+				t.Errorf("%s: %s PrimaryPart points elsewhere", ext, name)
+			}
+		}
 	}
-	buildFind(t, b.top, "ServerStorage", "A", "Tree")
-	buildFind(t, b.top, "ServerStorage", "B", "Tree")
 }
 
 // --- handleBuild ---
@@ -951,10 +892,33 @@ func TestHandleBuild(t *testing.T) {
 		t.Error("model missing Lib")
 	}
 
-	for _, bad := range []string{"x.rbxl", "x.rbxm", "x.foo"} {
-		if err := handleBuild(filepath.Join(out, bad)); err == nil {
-			t.Errorf("handleBuild(%q) succeeded", bad)
+	// Binary builds hold the same tree.
+	for _, pair := range [][2]string{{"game.rbxlx", "game.rbxl"}, {"MyLib.rbxmx", "MyLib.rbxm"}} {
+		if err := handleBuild(filepath.Join(out, pair[1])); err != nil {
+			t.Fatal(err)
 		}
+		var dumps [2]string
+		for i, name := range pair {
+			data, err := os.ReadFile(filepath.Join(out, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := decodeRobloxFile(data)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			dumps[i] = rbxDump(f.Roots)
+		}
+		if dumps[0] != dumps[1] {
+			t.Errorf("%s and %s differ:\n%s\nvs\n%s", pair[0], pair[1], dumps[0], dumps[1])
+		}
+	}
+	if !bytes.HasPrefix(mustRead(t, filepath.Join(out, "game.rbxl")), binaryMagic) {
+		t.Error("game.rbxl is not binary")
+	}
+
+	if err := handleBuild(filepath.Join(out, "x.foo")); err == nil {
+		t.Error("handleBuild(x.foo) succeeded")
 	}
 }
 
@@ -994,35 +958,20 @@ func BenchmarkBuilderBuild(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = bl.build()
+		_ = bl.encode(".rbxlx")
 	}
 }
 
-// BenchmarkExtractRbxmx measures the old two-pass prefab import (both wrappers).
-func BenchmarkExtractRbxmx(b *testing.B) {
-	data := []byte(buildRbxmx(3000))
-	b.SetBytes(int64(len(data)))
-	b.ReportAllocs()
-	for b.Loop() {
-		shared := map[string]string{}
-		if err := extractSharedStrings(data, shared); err != nil {
-			b.Fatal(err)
-		}
-		if _, err := extractItems(data); err != nil {
-			b.Fatal(err)
-		}
+func BenchmarkBuilderBuildBinary(b *testing.B) {
+	bl := NewBuilder(defaultConfig(), "")
+	src := strings.Repeat("print(\"hello <world> & ]]> friends\")\n", 60)
+	for i := 0; i < 2000; i++ {
+		inst := bl.place("ReplicatedStorage.shared", []string{fmt.Sprintf("dir%d", i/20), fmt.Sprintf("Mod%d", i)}, "ModuleScript")
+		setSource(inst, src)
 	}
-}
-
-// BenchmarkScanModel measures the single-pass prefab import used by the builder.
-func BenchmarkScanModel(b *testing.B) {
-	data := []byte(buildRbxmx(3000))
-	b.SetBytes(int64(len(data)))
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, _, err := scanModel(data, map[string]string{}); err != nil {
-			b.Fatal(err)
-		}
+		_ = bl.encode(".rbxl")
 	}
 }
 

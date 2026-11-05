@@ -14,7 +14,7 @@ func TestConvertToSourcemapNode(t *testing.T) {
 		{Name: "B", Class: "Folder", Children: []*Instance{
 			{Name: "C", Class: "Script", FilePath: "shared/B/C.server.luau"},
 		}},
-		{Name: "Tree", Class: "Model", RawXML: "<Item/>", FilePath: "prefab/Tree.rbxmx"},
+		{Name: "Tree", Class: "Model", FilePath: "prefab/Tree.rbxmx"},
 	}}
 	node := convertToSourcemapNode(tree)
 	if node.FilePaths != nil || len(node.Children) != 3 {
@@ -96,8 +96,12 @@ func TestHandleSourcemap(t *testing.T) {
 		t.Errorf("Note = %+v", n)
 	}
 	// Regression: prefab nodes used to have empty name and className.
-	if p := find("ServerStorage", "Tree"); p.ClassName != "Model" || p.FilePaths[0] != "prefab/Trees.rbxmx" {
+	// Models are named after their file, and their contents are listed.
+	if p := find("ServerStorage", "Trees"); p.ClassName != "Model" || p.FilePaths[0] != "prefab/Trees.rbxmx" {
 		t.Errorf("prefab = %+v", p)
+	}
+	if trunk := find("ServerStorage", "Trees", "Trunk"); trunk.ClassName != "Part" || trunk.FilePaths != nil {
+		t.Errorf("prefab child = %+v", trunk)
 	}
 	if strings.Contains(string(data), `"name": ""`) {
 		t.Error("sourcemap contains an empty name")

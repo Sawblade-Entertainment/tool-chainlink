@@ -3,28 +3,44 @@
 -- ChainLink Studio sync plugin
 
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 local ScriptEditorService = game:GetService("ScriptEditorService")
 local SerializationService = game:GetService("SerializationService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+
+-- Plugins also load into play-test DataModels. Syncing only makes sense in the edit session.
+if not RunService:IsEdit() then
+    return
+end
 
 local ATTR = "ChainLinkPath"
 local SETTING_URL = "ChainLink_Url"
 local SETTING_TOKEN = "ChainLink_Token"
 local SETTING_LOGS = "ChainLink_ShowLogs"
 local DEFAULT_URL = "http://localhost:8013"
+local MAX_LOG_LINES = 200
 
 -- ---------- State ----------
 
 local running = false
+-- Bumped on every connect and disconnect so a poll loop from an earlier
+-- connection exits instead of running alongside the new one.
+local generation = 0
+local probing = false
 local lastSeq = 0
 local sessionId = ""
-local instanceCache = {}
+local instanceCache: { [string]: Instance } = {}
 
 -- ---------- Theme ----------
 
 local Studio = settings().Studio
 local SGC = Enum.StudioStyleGuideColor
 local SGM = Enum.StudioStyleGuideModifier
+
+local FONT = Font.fromEnum(Enum.Font.BuilderSans)
+local FONT_MEDIUM = Font.new(FONT.Family, Enum.FontWeight.Medium)
+local FONT_MONO = Font.fromEnum(Enum.Font.RobotoMono)
+local SUCCESS_COLOR = Color3.fromRGB(58, 177, 94)
 
 local themeBindings: { () -> () } = {}
 
@@ -37,7 +53,7 @@ local function color(c: Enum.StudioStyleGuideColor, m: Enum.StudioStyleGuideModi
     return Studio.Theme:GetColor(c, m or SGM.Default)
 end
 
-Studio.ThemeChanged:Connect(function()
+local themeConnection = Studio.ThemeChanged:Connect(function()
     for _, fn in themeBindings do
         fn()
     end
@@ -46,12 +62,12 @@ end)
 -- ---------- UI ----------
 
 local toolbar = plugin:CreateToolbar("ChainLink")
-local toggleButton = toolbar:CreateButton("ChainLink", "Open ChainLink sync panel", "rbxassetid://4458901886")
-toggleButton.Icon = "rbxassetid://121842935231412"
+local toggleButton = toolbar:CreateButton("ChainLink", "Show the ChainLink sync panel", "rbxassetid://121842935231412")
+toggleButton.ClickableWhenViewportHidden = true
 
 local widget = plugin:CreateDockWidgetPluginGuiAsync(
     "ChainLinkWidget",
-    DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 300, 400, 220, 180)
+    DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 280, 240, 220, 180)
 )
 widget.Title = "ChainLink"
 
@@ -64,110 +80,152 @@ local function make(class: string, props: { [string]: any }, parent: Instance?):
     return inst
 end
 
-local function addBorder(inst: GuiObject, colorKey: Enum.StudioStyleGuideColor)
-    local stroke = make("UIStroke", { Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, inst)
-    themed(function()
-        stroke.Color = color(colorKey)
-    end)
-    return stroke
+local function textLabel(props: { [string]: any }, parent: Instance): TextLabel
+    props.BackgroundTransparency = 1
+    props.FontFace = props.FontFace or FONT
+    props.TextSize = props.TextSize or 14
+    props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+    return make("TextLabel", props, parent)
 end
 
-local root = make("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, widget)
-themed(function()
-    root.BackgroundColor3 = color(SGC.MainBackground)
-end)
-make("UIPadding", {
-    PaddingTop = UDim.new(0, 8),
-    PaddingBottom = UDim.new(0, 8),
-    PaddingLeft = UDim.new(0, 8),
-    PaddingRight = UDim.new(0, 8),
-}, root)
-make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, root)
+local function corner(inst: GuiObject)
+    make("UICorner", { CornerRadius = UDim.new(0, 4) }, inst)
+end
 
--- Status row
-local statusRow = make("Frame", { Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, LayoutOrder = 1 }, root)
-local statusDot = make("Frame", {
-    Size = UDim2.fromOffset(8, 8),
-    Position = UDim2.fromOffset(2, 6),
+local function stroke(inst: GuiObject): UIStroke
+    return make("UIStroke", { Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, inst)
+end
+
+local PADDING_TOP = 12
+local PADDING_BOTTOM = 10
+local GAP = 12
+local LOG_MIN_HEIGHT = 120
+
+-- The panel scrolls when the widget is too short to fit the controls plus the
+-- open log at its minimum height. updateLayout sizes root to fit.
+local scroller = make("ScrollingFrame", {
+    Size = UDim2.fromScale(1, 1),
     BorderSizePixel = 0,
-}, statusRow)
-make("UICorner", { CornerRadius = UDim.new(1, 0) }, statusDot)
-local statusLabel = make("TextLabel", {
-    Size = UDim2.new(1, -16, 1, 0),
-    Position = UDim2.fromOffset(16, 0),
-    BackgroundTransparency = 1,
-    Text = "Disconnected",
-    TextXAlignment = Enum.TextXAlignment.Left,
-    Font = Enum.Font.SourceSans,
-    TextSize = 14,
-    TextTruncate = Enum.TextTruncate.AtEnd,
-}, statusRow)
+    CanvasSize = UDim2.new(),
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    ScrollBarThickness = 6,
+    VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+}, widget)
 themed(function()
-    statusLabel.TextColor3 = color(SGC.MainText)
+    scroller.BackgroundColor3 = color(SGC.MainBackground)
+    scroller.ScrollBarImageColor3 = color(SGC.ScrollBar)
 end)
 
--- Labeled text field (Studio properties-panel style)
-local function field(labelText: string, placeholder: string, value: string, order: number): TextBox
-    local row = make("Frame", { Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1, LayoutOrder = order }, root)
-    local label = make("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 16),
-        BackgroundTransparency = 1,
-        Text = labelText,
-        Font = Enum.Font.SourceSans,
-        TextSize = 14,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    }, row)
+local root = make("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, scroller)
+make("UIPadding", {
+    PaddingTop = UDim.new(0, PADDING_TOP),
+    PaddingBottom = UDim.new(0, PADDING_BOTTOM),
+    PaddingLeft = UDim.new(0, 12),
+    PaddingRight = UDim.new(0, 12),
+}, root)
+make("UIListLayout", { Padding = UDim.new(0, GAP), SortOrder = Enum.SortOrder.LayoutOrder }, root)
+
+-- Status: a colored dot, a short title, and a line of detail underneath.
+local statusBlock = make("Frame", {
+    Size = UDim2.fromScale(1, 0),
+    AutomaticSize = Enum.AutomaticSize.Y,
+    BackgroundTransparency = 1,
+    LayoutOrder = 1,
+}, root)
+local statusDot = make(
+    "Frame",
+    { Size = UDim2.fromOffset(8, 8), Position = UDim2.fromOffset(0, 6), BorderSizePixel = 0 },
+    statusBlock
+)
+make("UICorner", { CornerRadius = UDim.new(1, 0) }, statusDot)
+local statusTitle = textLabel({
+    Size = UDim2.new(1, -16, 0, 20),
+    Position = UDim2.fromOffset(16, 0),
+    FontFace = FONT_MEDIUM,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+}, statusBlock)
+local statusDetail = textLabel({
+    Size = UDim2.new(1, -16, 0, 0),
+    Position = UDim2.fromOffset(16, 20),
+    AutomaticSize = Enum.AutomaticSize.Y,
+    TextSize = 13,
+    TextWrapped = true,
+}, statusBlock)
+
+-- Labeled text field, styled like Studio's own inputs.
+local function field(labelText: string, placeholder: string, value: string, order: number): (Frame, TextBox)
+    local row = make("Frame", { Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, LayoutOrder = order }, root)
+    local label = textLabel({ Size = UDim2.new(1, 0, 0, 18), Text = labelText }, row)
     local box = make("TextBox", {
-        Size = UDim2.new(1, 0, 0, 22),
-        Position = UDim2.fromOffset(0, 18),
+        Size = UDim2.new(1, 0, 0, 28),
+        Position = UDim2.fromOffset(0, 20),
         BorderSizePixel = 0,
         Text = value,
         PlaceholderText = placeholder,
         ClearTextOnFocus = false,
-        Font = Enum.Font.SourceSans,
+        FontFace = FONT,
         TextSize = 14,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, row)
-    make("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }, box)
-    local stroke = addBorder(box, SGC.InputFieldBorder)
+    corner(box)
+    make("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, box)
+    local border = stroke(box)
+    local hovered = false
 
     local function restyle()
-        local focused = box:IsFocused()
+        local mod = if not box.TextEditable
+            then SGM.Disabled
+            elseif box:IsFocused() then SGM.Selected
+            elseif hovered then SGM.Hover
+            else SGM.Default
         label.TextColor3 = color(SGC.MainText)
-        box.BackgroundColor3 = color(SGC.InputFieldBackground)
-        box.TextColor3 = color(SGC.MainText)
+        box.BackgroundColor3 = color(SGC.InputFieldBackground, mod)
+        box.TextColor3 = color(if box.TextEditable then SGC.MainText else SGC.DimmedText)
         box.PlaceholderColor3 = color(SGC.DimmedText)
-        stroke.Color = color(SGC.InputFieldBorder, focused and SGM.Selected or SGM.Default)
+        border.Color = color(SGC.InputFieldBorder, mod)
     end
     themed(restyle)
     box.Focused:Connect(restyle)
     box.FocusLost:Connect(restyle)
-    return box
+    box:GetPropertyChangedSignal("TextEditable"):Connect(restyle)
+    box.MouseEnter:Connect(function()
+        hovered = true
+        restyle()
+    end)
+    box.MouseLeave:Connect(function()
+        hovered = false
+        restyle()
+    end)
+    return row, box
 end
 
-local urlBox = field("Server URL", "http://localhost:8080", plugin:GetSetting(SETTING_URL) or DEFAULT_URL, 2)
-local tokenBox = field("Token", "optional", plugin:GetSetting(SETTING_TOKEN) or "", 3)
+local _, urlBox = field("Server URL", DEFAULT_URL, plugin:GetSetting(SETTING_URL) or DEFAULT_URL, 2)
+-- The token is only needed when chainlink.json sets one, so the field stays
+-- hidden until a token is saved or the server asks for one.
+local tokenRow, tokenBox = field("Token", "From chainlink.json", plugin:GetSetting(SETTING_TOKEN) or "", 3)
+tokenRow.Visible = tokenBox.Text ~= ""
 
--- Connect button
 local connectButton = make("TextButton", {
-    Size = UDim2.new(1, 0, 0, 26),
+    Size = UDim2.new(1, 0, 0, 28),
     BorderSizePixel = 0,
     Text = "Connect",
-    Font = Enum.Font.SourceSans,
+    FontFace = FONT_MEDIUM,
     TextSize = 14,
     AutoButtonColor = false,
     LayoutOrder = 4,
 }, root)
-make("UICorner", { CornerRadius = UDim.new(0, 3) }, connectButton)
-local connectStroke = addBorder(connectButton, SGC.ButtonBorder)
+corner(connectButton)
+local connectStroke = stroke(connectButton)
 local connectHover = false
+local connectPressed = false
 
+-- Connect is the primary action; Disconnect uses the quieter secondary style.
 local function styleConnect()
-    local mod = connectHover and SGM.Hover or SGM.Default
+    local mod = if connectPressed then SGM.Pressed elseif connectHover then SGM.Hover else SGM.Default
     if running then
-        connectButton.BackgroundColor3 = color(SGC.Button, mod)
-        connectButton.TextColor3 = color(SGC.ButtonText, mod)
-        connectStroke.Color = color(SGC.ButtonBorder, mod)
+        connectButton.BackgroundColor3 = color(SGC.DialogButton, mod)
+        connectButton.TextColor3 = color(SGC.DialogButtonText, mod)
+        connectStroke.Color = color(SGC.DialogButtonBorder, mod)
     else
         connectButton.BackgroundColor3 = color(SGC.DialogMainButton, mod)
         connectButton.TextColor3 = color(SGC.DialogMainButtonText, mod)
@@ -181,65 +239,99 @@ connectButton.MouseEnter:Connect(function()
 end)
 connectButton.MouseLeave:Connect(function()
     connectHover = false
+    connectPressed = false
+    styleConnect()
+end)
+connectButton.MouseButton1Down:Connect(function()
+    connectPressed = true
+    styleConnect()
+end)
+connectButton.MouseButton1Up:Connect(function()
+    connectPressed = false
     styleConnect()
 end)
 
--- Divider
-local divider = make("Frame", { Size = UDim2.new(1, 0, 0, 1), BorderSizePixel = 0, LayoutOrder = 5 }, root)
-themed(function()
-    divider.BackgroundColor3 = color(SGC.Border)
-end)
+-- Pushes the sync log to the bottom of the panel while it is collapsed.
+local spacer = make("Frame", { Size = UDim2.fromScale(1, 0), BackgroundTransparency = 1, LayoutOrder = 10 }, root)
+make("UIFlexItem", { FlexMode = Enum.UIFlexMode.Fill }, spacer)
 
--- Collapsible "Output" section (like the Properties panel headers)
+-- Collapsed-by-default sync log. Warnings and errors also go to Studio's Output.
 local showLogs = plugin:GetSetting(SETTING_LOGS) == true
 
 local logHeader = make("TextButton", {
     Size = UDim2.new(1, 0, 0, 20),
-    BorderSizePixel = 0,
+    BackgroundTransparency = 1,
     Text = "",
     AutoButtonColor = false,
-    LayoutOrder = 6,
+    LayoutOrder = 11,
 }, root)
-local logArrow = make("TextLabel", {
-    Size = UDim2.fromOffset(16, 20),
-    BackgroundTransparency = 1,
-    Font = Enum.Font.SourceSans,
-    TextSize = 14,
+local logChevron = textLabel({
+    Size = UDim2.fromOffset(12, 20),
+    Text = ">",
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Center,
 }, logHeader)
-local logTitle = make("TextLabel", {
+local logTitle = textLabel({
     Size = UDim2.new(1, -16, 1, 0),
     Position = UDim2.fromOffset(16, 0),
-    BackgroundTransparency = 1,
-    Text = "Output",
-    Font = Enum.Font.SourceSansSemibold,
-    TextSize = 14,
-    TextXAlignment = Enum.TextXAlignment.Left,
+    Text = "Sync log",
+    TextSize = 13,
 }, logHeader)
 
 local logFrame = make("ScrollingFrame", {
-    Size = UDim2.new(1, 0, 0, 0),
+    Size = UDim2.fromScale(1, 0),
     BorderSizePixel = 0,
     CanvasSize = UDim2.new(),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
-    ScrollBarThickness = 8,
-    ScrollBarImageTransparency = 0.4,
-    LayoutOrder = 7,
-    Visible = false,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    ScrollBarThickness = 6,
+    LayoutOrder = 12,
 }, root)
 make("UIFlexItem", { FlexMode = Enum.UIFlexMode.Fill }, logFrame)
 make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, logFrame)
-make("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingTop = UDim.new(0, 2) }, logFrame)
-addBorder(logFrame, SGC.Border)
+make("UIPadding", {
+    PaddingTop = UDim.new(0, 4),
+    PaddingBottom = UDim.new(0, 4),
+    PaddingLeft = UDim.new(0, 6),
+    PaddingRight = UDim.new(0, 6),
+}, logFrame)
+corner(logFrame)
+local logStroke = stroke(logFrame)
+
+-- updateLayout gives the fill items (spacer or log) whatever height the widget
+-- has left, but never less than LOG_MIN_HEIGHT for the open log. Anything
+-- taller than the widget scrolls.
+local function updateLayout()
+    local used = PADDING_TOP + PADDING_BOTTOM
+    local visible = 0
+    for _, child in root:GetChildren() do
+        if child:IsA("GuiObject") and child.Visible then
+            visible += 1
+            if child ~= spacer and child ~= logFrame then
+                used += child.AbsoluteSize.Y
+            end
+        end
+    end
+    used += GAP * math.max(visible - 1, 0)
+    local height = math.max(scroller.AbsoluteSize.Y, used + (if showLogs then LOG_MIN_HEIGHT else 0))
+    root.Size = UDim2.new(1, 0, 0, height)
+    scroller.CanvasSize = UDim2.fromOffset(0, height)
+end
+scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateLayout)
+statusBlock:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateLayout)
+tokenRow:GetPropertyChangedSignal("Visible"):Connect(updateLayout)
 
 local logHover = false
 local function styleLogSection()
-    logHeader.BackgroundColor3 = color(SGC.CategoryItem, logHover and SGM.Hover or SGM.Default)
-    logArrow.TextColor3 = color(SGC.MainText)
-    logTitle.TextColor3 = color(SGC.MainText)
-    logArrow.Text = showLogs and "-" or "+"
+    local headerColor = color(if logHover then SGC.MainText else SGC.DimmedText)
+    logChevron.TextColor3 = headerColor
+    logTitle.TextColor3 = headerColor
+    logChevron.Rotation = if showLogs then 90 else 0
     logFrame.Visible = showLogs
-    logFrame.BackgroundColor3 = color(SGC.ScrollBarBackground)
+    spacer.Visible = not showLogs
+    logFrame.BackgroundColor3 = color(SGC.InputFieldBackground)
     logFrame.ScrollBarImageColor3 = color(SGC.ScrollBar)
+    logStroke.Color = color(SGC.Border)
 end
 themed(styleLogSection)
 logHeader.MouseEnter:Connect(function()
@@ -254,7 +346,15 @@ logHeader.MouseButton1Click:Connect(function()
     showLogs = not showLogs
     plugin:SetSetting(SETTING_LOGS, showLogs)
     styleLogSection()
+    updateLayout()
+    if showLogs then
+        -- Bring the newly opened log into view when the panel has to scroll.
+        task.defer(function()
+            scroller.CanvasPosition = Vector2.new(0, scroller.AbsoluteCanvasSize.Y)
+        end)
+    end
 end)
+updateLayout()
 
 -- ---------- Logging ----------
 
@@ -262,7 +362,7 @@ type LogLevel = "info" | "ok" | "warn" | "error" | "dim"
 
 local function levelColor(level: LogLevel): Color3
     if level == "ok" then
-        return color(SGC.InfoText)
+        return SUCCESS_COLOR
     elseif level == "warn" then
         return color(SGC.WarningText)
     elseif level == "error" then
@@ -273,48 +373,85 @@ local function levelColor(level: LogLevel): Color3
     return color(SGC.MainText)
 end
 
-local logCount = 0
+local logLines: { TextLabel } = {}
+local logOrder = 0
+
+themed(function()
+    for _, line in logLines do
+        line.TextColor3 = levelColor(line:GetAttribute("Level") :: LogLevel)
+    end
+end)
+
+local function scrollLogToEnd()
+    logFrame.CanvasPosition = Vector2.new(0, logFrame.AbsoluteCanvasSize.Y)
+end
+
 local function logLine(msg: string, level: LogLevel?)
-    logCount += 1
     local lvl: LogLevel = level or "info"
-    local line = make("TextLabel", {
-        Size = UDim2.new(1, -8, 0, 16),
-        BackgroundTransparency = 1,
+    if lvl == "warn" or lvl == "error" then
+        warn("[ChainLink] " .. msg)
+    end
+    logOrder += 1
+    local line = textLabel({
+        Size = UDim2.new(1, 0, 0, 16),
         Text = msg,
-        LayoutOrder = logCount,
-        Font = Enum.Font.Code,
-        TextSize = 13,
-        TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = logOrder,
+        FontFace = FONT_MONO,
+        TextSize = 12,
         TextTruncate = Enum.TextTruncate.AtEnd,
+        TextColor3 = levelColor(lvl),
     }, logFrame)
-    themed(function()
-        if line.Parent then
-            line.TextColor3 = levelColor(lvl)
-        end
-    end)
-    if logCount > 200 then
-        for _, c in logFrame:GetChildren() do
-            if c:IsA("TextLabel") then
-                c:Destroy()
-                break
-            end
-        end
+    line:SetAttribute("Level", lvl)
+    table.insert(logLines, line)
+    if #logLines > MAX_LOG_LINES then
+        table.remove(logLines, 1):Destroy()
     end
     if showLogs then
-        logFrame.CanvasPosition = Vector2.new(0, math.huge)
+        -- Wait for the automatic canvas size to include the new line.
+        task.defer(scrollLogToEnd)
     end
 end
 
-local function setStatus(connected: boolean, text: string)
-    statusDot.BackgroundColor3 = connected and Color3.fromRGB(60, 180, 90) or color(SGC.ErrorText)
-    statusLabel.Text = text
-    connectButton.Text = running and "Disconnect" or "Connect"
+-- ---------- Status ----------
+
+type Tone = "idle" | "found" | "busy" | "connected" | "error"
+local statusTone: Tone = "idle"
+
+local function toneColor(tone: Tone): Color3
+    if tone == "connected" then
+        return SUCCESS_COLOR
+    elseif tone == "found" then
+        return color(SGC.DialogMainButton)
+    elseif tone == "busy" then
+        return color(SGC.WarningText)
+    elseif tone == "error" then
+        return color(SGC.ErrorText)
+    end
+    return color(SGC.DimmedText)
+end
+
+themed(function()
+    statusDot.BackgroundColor3 = toneColor(statusTone)
+    statusTitle.TextColor3 = color(SGC.MainText)
+    statusDetail.TextColor3 = color(SGC.DimmedText)
+end)
+
+local function setStatus(tone: Tone, title: string, detail: string)
+    statusTone = tone
+    statusDot.BackgroundColor3 = toneColor(tone)
+    statusTitle.Text = title
+    statusDetail.Text = detail
+    connectButton.Text = if running then "Disconnect" else "Connect"
+    urlBox.TextEditable = not running
+    tokenBox.TextEditable = not running
     styleConnect()
 end
 
+local IDLE_DETAIL = "Run chainlink serve in your project, then connect."
+
 -- ---------- Instance resolution ----------
 
-local function resolveTarget(target)
+local function resolveTarget(target: string): Instance?
     local parts = string.split(target, ".")
     local ok, current = pcall(function()
         return game:GetService(parts[1])
@@ -334,11 +471,12 @@ local function resolveTarget(target)
     return current
 end
 
-local function keyFor(target, segments)
-    return target .. "/" .. table.concat(segments, "/")
+-- keyFor names the instance at segments[1..count] under target.
+local function keyFor(target: string, segments: { string }, count: number?): string
+    return target .. "/" .. table.concat(segments, "/", 1, count or #segments)
 end
 
-local function findInstance(target, segments)
+local function findInstance(target: string, segments: { string }): Instance?
     local key = keyFor(target, segments)
     local cached = instanceCache[key]
     if cached and cached.Parent then
@@ -360,34 +498,40 @@ local function findInstance(target, segments)
     return current
 end
 
-local function ensureParent(target, segments)
+local function ensureParent(target: string, segments: { string }): Instance?
     local current = resolveTarget(target)
     if not current then
         return nil
     end
     for i = 1, #segments - 1 do
         local seg = segments[i]
+        local key = keyFor(target, segments, i)
         local child = current:FindFirstChild(seg)
         if not child then
             child = Instance.new("Folder")
             child.Name = seg
-            child:SetAttribute(ATTR, keyFor(target, { table.unpack(segments, 1, i) }))
+            child:SetAttribute(ATTR, key)
             child.Parent = current
         end
-        instanceCache[keyFor(target, { table.unpack(segments, 1, i) })] = child
+        instanceCache[key] = child
         current = child
     end
     return current
 end
 
-local function replaceInstance(old, newClass)
+-- replaceInstance swaps old for a new instance of newClass, keeping its name,
+-- attributes and children. With syncedOnly, only children synced from other
+-- files move; the rest came from a model file and go away with it.
+local function replaceInstance(old: Instance, newClass: string, syncedOnly: boolean?): Instance
     local new = Instance.new(newClass)
     new.Name = old.Name
     for attr, value in old:GetAttributes() do
         new:SetAttribute(attr, value)
     end
     for _, child in old:GetChildren() do
-        child.Parent = new
+        if not syncedOnly or child:GetAttribute(ATTR) ~= nil then
+            child.Parent = new
+        end
     end
     new.Parent = old.Parent
     old:Destroy()
@@ -395,472 +539,200 @@ local function replaceInstance(old, newClass)
 end
 
 local BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local BASE64_VALUES: { [number]: number } = {}
+for i = 1, #BASE64 do
+    BASE64_VALUES[string.byte(BASE64, i)] = i - 1
+end
+local PAD = string.byte("=")
 
-local function decodeBase64(data: string): string
-    local output = table.create(math.floor(#data * 3 / 4))
-    local outCount = 0
-    for i = 1, #data, 4 do
-        local a = string.find(BASE64, string.sub(data, i, i), 1, true)
-        local b = string.find(BASE64, string.sub(data, i + 1, i + 1), 1, true)
-        local cChar = string.sub(data, i + 2, i + 2)
-        local dChar = string.sub(data, i + 3, i + 3)
-        local c = cChar == "=" and 1 or string.find(BASE64, cChar, 1, true)
-        local d = dChar == "=" and 1 or string.find(BASE64, dChar, 1, true)
-        if not a or not b or not c or not d then
+local function decodeBase64(data: string): buffer
+    local len = #data
+    if len % 4 ~= 0 then
+        error("invalid base64 model payload")
+    end
+    local padding = 0
+    if len > 0 and string.byte(data, len) == PAD then
+        padding += 1
+        if string.byte(data, len - 1) == PAD then
+            padding += 1
+        end
+    end
+    local out = buffer.create(len // 4 * 3 - padding)
+    local o = 0
+    for i = 1, len, 4 do
+        local a, b, c, d = string.byte(data, i, i + 3)
+        local va, vb = BASE64_VALUES[a], BASE64_VALUES[b]
+        local vc = if c == PAD then 0 else BASE64_VALUES[c]
+        local vd = if d == PAD then 0 else BASE64_VALUES[d]
+        if not va or not vb or not vc or not vd then
             error("invalid base64 model payload")
         end
-        a -= 1
-        b -= 1
-        c -= 1
-        d -= 1
-        outCount += 1
-        output[outCount] = string.char(a * 4 + math.floor(b / 16))
-        if cChar ~= "=" then
-            outCount += 1
-            output[outCount] = string.char((b % 16) * 16 + math.floor(c / 4))
+        local n = va * 262144 + vb * 4096 + vc * 64 + vd
+        buffer.writeu8(out, o, n // 65536)
+        o += 1
+        if c ~= PAD then
+            buffer.writeu8(out, o, (n // 256) % 256)
+            o += 1
         end
-        if dChar ~= "=" then
-            outCount += 1
-            output[outCount] = string.char((c % 4) * 64 + d)
+        if d ~= PAD then
+            buffer.writeu8(out, o, n % 256)
+            o += 1
         end
     end
-    return table.concat(output, "", 1, outCount)
+    return out
 end
 
-local function xmlDecode(text: string): string
-    text = string.gsub(text, "&#x([%da-fA-F]+);", function(hex)
-        local n = tonumber(hex, 16)
-        return n and utf8.char(n) or ""
-    end)
-    text = string.gsub(text, "&#(%d+);", function(dec)
-        local n = tonumber(dec)
-        return n and utf8.char(n) or ""
-    end)
-    text = string.gsub(text, "&lt;", "<")
-    text = string.gsub(text, "&gt;", ">")
-    text = string.gsub(text, "&quot;", "\"")
-    text = string.gsub(text, "&apos;", "'")
-    text = string.gsub(text, "&amp;", "&")
-    return text
+local function isModelPath(path: string): boolean
+    return string.match(string.lower(path), "%.rbxmx?$") ~= nil
 end
 
-local function parseXml(xml: string)
-    local root = { name = "#document", attrs = {}, children = {}, textParts = {} }
-    local stack = { root }
-    local pos = 1
-    while pos <= #xml do
-        local lt = string.find(xml, "<", pos, true)
-        if not lt then
-            local tail = string.sub(xml, pos)
-            if #tail > 0 then table.insert(stack[#stack].textParts, xmlDecode(tail)) end
-            break
-        end
-        if lt > pos then
-            table.insert(stack[#stack].textParts, xmlDecode(string.sub(xml, pos, lt - 1)))
-        end
-        if string.sub(xml, lt, lt + 8) == "<![CDATA[" then
-            local close = string.find(xml, "]]>", lt + 9, true)
-            if not close then error("unterminated XML CDATA section") end
-            table.insert(stack[#stack].textParts, string.sub(xml, lt + 9, close - 1))
-            pos = close + 3
-        elseif string.sub(xml, lt, lt + 3) == "<!--" then
-            local close = string.find(xml, "-->", lt + 4, true)
-            if not close then error("unterminated XML comment") end
-            pos = close + 3
-        elseif string.sub(xml, lt, lt + 1) == "<?" then
-            local close = string.find(xml, "?>", lt + 2, true)
-            if not close then error("unterminated XML processing instruction") end
-            pos = close + 2
-        elseif string.sub(xml, lt, lt + 1) == "<!" then
-            local close = string.find(xml, ">", lt + 2, true)
-            if not close then error("unterminated XML declaration") end
-            pos = close + 1
-        else
-            local close = string.find(xml, ">", lt + 1, true)
-            if not close then error("unterminated XML tag") end
-            local inside = string.sub(xml, lt + 1, close - 1)
-            if string.sub(inside, 1, 1) == "/" then
-                local name = string.match(inside, "^/%s*([^%s>]+)")
-                if #stack <= 1 or not name or stack[#stack].name ~= name then
-                    error("mismatched XML closing tag " .. tostring(name))
-                end
-                table.remove(stack)
-            else
-                local selfClosing = string.match(inside, "/%s*$") ~= nil
-                if selfClosing then inside = string.gsub(inside, "/%s*$", "") end
-                local name = string.match(inside, "^%s*([^%s]+)")
-                if not name then error("empty XML tag") end
-                local node = { name = name, attrs = {}, children = {}, textParts = {} }
-                local tagName = string.match(inside, "^%s*([^%s]+)")
-                local rest = string.sub(inside, #tagName + 1)
-                while true do
-                    rest = string.gsub(rest, "^%s+", "")
-                    if rest == "" then break end
-                    local attr, afterName = string.match(rest, "^([%w_:%.%-]+)%s*=%s*(.*)$")
-                    if not attr then error("malformed XML attribute") end
-                    local quote = string.sub(afterName, 1, 1)
-                    if quote ~= "'" and quote ~= '\"' then error("unquoted XML attribute") end
-                    local endQuote = string.find(afterName, quote, 2, true)
-                    if not endQuote then error("unterminated XML attribute") end
-                    node.attrs[attr] = xmlDecode(string.sub(afterName, 2, endQuote - 1))
-                    rest = string.sub(afterName, endQuote + 1)
-                end
-                table.insert(stack[#stack].children, node)
-                if not selfClosing then table.insert(stack, node) end
-            end
-            pos = close + 1
-        end
-    end
-    if #stack ~= 1 then error("unclosed XML element " .. tostring(stack[#stack].name)) end
-    local function finish(node)
-        node.text = table.concat(node.textParts)
-        node.textParts = nil
-        for _, child in node.children do finish(child) end
-    end
-    finish(root)
-    return root
-end
-
-local function xmlChild(node, name)
-    for _, child in node.children do
-        if child.name == name then return child end
-    end
-    return nil
-end
-
-local function xmlText(node, name)
-    local child = xmlChild(node, name)
-    return child and child.text or ""
-end
-
-local function xmlTrim(text: string): string
-    return string.match(text, "^%s*(.-)%s*$") or ""
-end
-
-local function xmlNumber(node, name): number
-    return tonumber(xmlTrim(xmlText(node, name))) or 0
-end
-
-local function xmlVector2(node, prefix)
-    local pre = prefix or ""
-    return Vector2.new(xmlNumber(node, pre .. "X"), xmlNumber(node, pre .. "Y"))
-end
-
-local function xmlVector3(node, prefix)
-    local pre = prefix or ""
-    return Vector3.new(xmlNumber(node, pre .. "X"), xmlNumber(node, pre .. "Y"), xmlNumber(node, pre .. "Z"))
-end
-
-local function parseRbxmxProperty(prop, sharedStrings)
-    local kind = prop.name
-    local text = xmlTrim(prop.text)
-    if kind == "string" or kind == "ProtectedString" then
-        return prop.text
-    elseif kind == "bool" then
-        return text == "true" or text == "1"
-    elseif kind == "int" or kind == "int64" or kind == "float" or kind == "double" or kind == "token" then
-        return tonumber(text) or 0
-    elseif kind == "Vector3" then
-        return xmlVector3(prop)
-    elseif kind == "Vector2" then
-        return xmlVector2(prop)
-    elseif kind == "Color3" then
-        return Color3.new(xmlNumber(prop, "R"), xmlNumber(prop, "G"), xmlNumber(prop, "B"))
-    elseif kind == "Color3uint8" then
-        return Color3.fromRGB(xmlNumber(prop, "R"), xmlNumber(prop, "G"), xmlNumber(prop, "B"))
-    elseif kind == "UDim" then
-        return UDim.new(xmlNumber(prop, "S"), xmlNumber(prop, "O"))
-    elseif kind == "UDim2" then
-        return UDim2.new(xmlNumber(prop, "XS"), xmlNumber(prop, "XO"), xmlNumber(prop, "YS"), xmlNumber(prop, "YO"))
-    elseif kind == "CFrame" or kind == "CoordinateFrame" then
-        local position = xmlVector3(prop)
-        local matrix = {}
-        for _, key in { "R00", "R01", "R02", "R10", "R11", "R12", "R20", "R21", "R22" } do
-            matrix[#matrix + 1] = xmlNumber(prop, key)
-        end
-        if xmlChild(prop, "R00") then
-            return CFrame.new(position.X, position.Y, position.Z, table.unpack(matrix))
-        end
-        return CFrame.new(position)
-    elseif kind == "Ref" then
-        return { __chainlinkRef = text }
-    elseif kind == "Content" then
-        return xmlText(prop, "url") ~= "" and xmlText(prop, "url") or prop.text
-    elseif kind == "url" then
-        return prop.text
-    elseif kind == "BinaryString" then
-        return decodeBase64(text)
-    elseif kind == "SharedString" then
-        local reference = xmlChild(prop, "SharedString")
-        local key = (reference and reference.attrs.md5) or prop.attrs.md5 or text
-        return sharedStrings[key] or ""
-    elseif kind == "NumberRange" then
-        local min = tonumber(xmlTrim(xmlText(prop, "Min"))) or tonumber(xmlTrim(xmlText(prop, "min"))) or tonumber(prop.attrs.min) or 0
-        local max = tonumber(xmlTrim(xmlText(prop, "Max"))) or tonumber(xmlTrim(xmlText(prop, "max"))) or tonumber(prop.attrs.max) or 0
-        return NumberRange.new(min, max)
-    elseif kind == "Rect" then
-        local minNode = xmlChild(prop, "min") or xmlChild(prop, "Min")
-        local maxNode = xmlChild(prop, "max") or xmlChild(prop, "Max")
-        if minNode and maxNode then
-            return Rect.new(xmlVector2(minNode), xmlVector2(maxNode))
-        end
-        return Rect.new(Vector2.new(xmlNumber(prop, "MinX"), xmlNumber(prop, "MinY")), Vector2.new(xmlNumber(prop, "MaxX"), xmlNumber(prop, "MaxY")))
-    end
-    return nil, "unsupported XML property type " .. kind
-end
-
-local function parseRbxmx(xml: string)
-    local document = parseXml(xml)
-    local roblox = xmlChild(document, "roblox")
-    if not roblox then error("XML model has no <roblox> root") end
-    local sharedStrings = {}
-    local sharedNode = xmlChild(roblox, "SharedStrings")
-    if sharedNode then
-        for _, entry in sharedNode.children do
-            if entry.name == "SharedString" and entry.attrs.md5 then
-                sharedStrings[entry.attrs.md5] = entry.text
-            end
-        end
-    end
-    local topLevelItems = {}
-    local topLevelCount = 0
-    local referents = {}
-    local pendingRefs = {}
-    local madeItems = {}
-    local function buildItem(node, parent)
-        local className = node.attrs.class
-        if not className then warn("ChainLink: skipping <Item> without class") return end
-        local ok, inst = pcall(Instance.new, className)
-        if not ok then warn("ChainLink: cannot create XML class " .. className .. ": " .. tostring(inst)) return end
-        inst.Parent = parent
-        if node.attrs.referent and node.attrs.referent ~= "" then referents[node.attrs.referent] = inst end
-        table.insert(madeItems, inst)
-        local properties = xmlChild(node, "Properties")
-        if properties then
-            for _, prop in properties.children do
-                local name = prop.attrs.name
-                if name then
-                    local value, problem = parseRbxmxProperty(prop, sharedStrings)
-                    if problem then
-                        warn("ChainLink: " .. problem .. " (" .. name .. ")")
-                    elseif type(value) == "table" and value.__chainlinkRef then
-                        table.insert(pendingRefs, { inst = inst, property = name, referent = value.__chainlinkRef })
-                    elseif value ~= nil then
-                        if prop.name == "token" and type(value) == "number" then
-                            local enumOk, currentValue = pcall(function() return (inst :: any)[name] end)
-                            if enumOk and typeof(currentValue) == "EnumItem" then
-                                local itemsOk, items = pcall(function() return Enum[currentValue.EnumType.Name]:GetEnumItems() end)
-                                if itemsOk then
-                                    for _, enumItem in items do
-                                        if enumItem.Value == value then value = enumItem break end
-                                    end
-                                end
-                            end
-                        end
-                        local setOk, setErr = pcall(function() (inst :: any)[name] = value end)
-                        if not setOk then warn("ChainLink: cannot set " .. className .. "." .. name .. ": " .. tostring(setErr)) end
-                    end
-                end
-            end
-        end
-        for _, child in node.children do
-            if child.name == "Item" then buildItem(child, inst) end
-        end
-    end
-    for _, node in roblox.children do
-        if node.name == "Item" then
-            topLevelCount += 1
-            local before = #madeItems
-            buildItem(node, nil)
-            if #madeItems > before then
-                table.insert(topLevelItems, madeItems[before + 1])
-            end
-        end
-    end
-    for _, ref in pendingRefs do
-        local target = referents[ref.referent]
-        if target then
-            local ok, err = pcall(function() (ref.inst :: any)[ref.property] = target end)
-            if not ok then warn("ChainLink: cannot resolve Ref property " .. ref.property .. ": " .. tostring(err)) end
-        elseif ref.referent ~= "null" and ref.referent ~= "" then
-            warn("ChainLink: unresolved XML referent " .. ref.referent .. " for " .. ref.property)
-        end
-    end
-    return topLevelItems, topLevelCount
-end
-
-local function setRbxmx(parent: Instance, name: string, key: string, xml: string): Instance?
-    local items, rootCount = parseRbxmx(xml)
-    if rootCount == 0 then
-        warn("ChainLink: .rbxmx has no top-level <Item>; skipping " .. name)
-        return nil
-    end
-    if #items == 0 then
-        warn("ChainLink: .rbxmx top-level items could not be created; skipping " .. name)
-        return nil
-    end
-
+-- importModel replaces the instance called name under parent with the contents
+-- of a .rbxm or .rbxmx file. Studio decodes both formats itself, so every
+-- property type loads exactly as it would from Studio's own files.
+local function importModel(parent: Instance, name: string, key: string, data: string): Instance?
+    local items = SerializationService:DeserializeInstancesAsync(decodeBase64(data))
     local synced: Instance
-    if rootCount == 1 and #items == 1 then
+    if #items == 1 then
         synced = items[1]
-        -- Name the synced root after the file for consistency with other synced files.
-        synced.Name = name
+    elseif #items == 0 then
+        logLine(name .. " has no instances; skipping", "warn")
+        return nil
     else
-        warn("ChainLink: .rbxmx has multiple top-level <Item> roots; using a Folder for " .. name)
-        local folder = Instance.new("Folder")
-        folder.Name = name
+        logLine(name .. " has several top-level instances; wrapping them in a Folder", "warn")
+        synced = Instance.new("Folder")
         for _, item in items do
-            item.Parent = folder
+            item.Parent = synced
         end
-        synced = folder
     end
+    -- Named after the file, like every other synced instance.
+    synced.Name = name
+    -- A model saved from a synced place carries stale sync attributes that
+    -- would make a full sync prune its contents.
+    for _, d in synced:GetDescendants() do
+        if d:GetAttribute(ATTR) ~= nil then
+            d:SetAttribute(ATTR, nil)
+        end
+    end
+    synced:SetAttribute(ATTR, key)
 
     local existing = parent:FindFirstChild(name)
-    if existing then existing:Destroy() end
-    synced:SetAttribute(ATTR, key)
+    if existing then
+        -- Keep instances synced from other files: the contents of a Foo/ folder
+        -- next to Foo.rbxmx, or the siblings of an init.rbxmx.
+        for _, child in existing:GetChildren() do
+            if child:GetAttribute(ATTR) ~= nil then
+                child.Parent = synced
+            end
+        end
+        existing:Destroy()
+    end
     synced.Parent = parent
     return synced
 end
 
-local function setModel(inst, ev)
-    if ev.modelFormat ~= "rbxm" then
-        error(".rbxm sync payload must be binary model data for automatic Studio insertion")
-    end
-    local bytes = decodeBase64(ev.modelData)
-    local imported = SerializationService:DeserializeInstancesAsync(buffer.fromstring(bytes))
-    for _, child in inst:GetChildren() do
-        child:Destroy()
-    end
-    for _, item in imported do
-        item.Parent = inst
-    end
-end
-
-local function setSource(inst, source, ev)
-    if ev and ev.modelData then
-        if not inst:IsA("Model") then
-            error("model file did not resolve to a Model instance")
-        end
-        setModel(inst, ev)
-    elseif inst:IsA("LuaSourceContainer") then
+local function setSource(inst: Instance, ev)
+    if inst:IsA("LuaSourceContainer") then
+        local source = ev.source or ""
         local ok = pcall(function()
             ScriptEditorService:UpdateSourceAsync(inst, function()
                 return source
             end)
         end)
         if not ok then
-            inst.Source = source
+            (inst :: any).Source = source
         end
     elseif inst:IsA("StringValue") then
-        inst.Value = source
+        inst.Value = ev.source or ""
     end
 end
+
 -- ---------- Applying events ----------
 
 local function applyCreateOrUpdate(ev)
     local segments = ev.instancePath
-    local key = keyFor(ev.target, segments)
-
     if #segments == 0 then
         return
     end
+    local key = keyFor(ev.target, segments)
 
     local parent = ensureParent(ev.target, segments)
     if not parent then
         logLine("Target not found: " .. ev.target, "warn")
         return
     end
-
     local name = segments[#segments]
-    local isRbxmx = string.lower(ev.path or ""):sub(-6) == ".rbxmx"
-    if isRbxmx and string.lower(name):sub(-6) == ".rbxmx" then
-        name = string.sub(name, 1, #name - 7)
-    end
-    if isRbxmx then
-        local xml = ev.source or ev.contents or ev.modelData or ""
-        if type(xml) ~= "string" then error(".rbxmx payload has no XML text") end
-        if string.sub(xml, 1, 5) ~= "<?xml" and not string.find(xml, "<roblox", 1, true) then
-            local decodedOk, decoded = pcall(decodeBase64, xml)
-            if decodedOk and string.find(decoded, "<roblox", 1, true) then xml = decoded end
-        end
-        local ok, synced = pcall(setRbxmx, parent, name, key, xml)
+
+    -- Model files replace the instance outright with whatever the file holds.
+    if ev.modelFormat then
+        local ok, synced = pcall(importModel, parent, name, key, ev.modelData)
         if not ok then
-            logLine(".rbxmx import failed: " .. tostring(synced), "error")
+            logLine("Couldn't import " .. ev.path .. ": " .. tostring(synced), "error")
         elseif synced then
             instanceCache[key] = synced
         end
         return
     end
 
-    local targetClass = ev.className
     local inst = parent:FindFirstChild(name)
-    if inst and inst.ClassName ~= targetClass then
-        inst = replaceInstance(inst, targetClass)
+    if inst and inst.ClassName ~= ev.className then
+        inst = replaceInstance(inst, ev.className)
     elseif not inst then
-        inst = Instance.new(targetClass)
+        inst = Instance.new(ev.className)
         inst.Name = name
         inst.Parent = parent
     end
     inst:SetAttribute(ATTR, key)
     instanceCache[key] = inst
-    local ok, err = pcall(setSource, inst, ev.source or "", ev)
+    local ok, err = pcall(setSource, inst, ev)
     if not ok then
-        logLine("Model/source import failed: " .. tostring(err), "error")
+        logLine("Couldn't update " .. ev.path .. ": " .. tostring(err), "error")
     end
 end
 
 local function applyDelete(ev)
     local key = keyFor(ev.target, ev.instancePath)
-    local lookupSegments = ev.instancePath
-    if string.lower(ev.path or ""):sub(-6) == ".rbxmx" and #ev.instancePath > 0 then
-        lookupSegments = table.clone(ev.instancePath)
-        local last = lookupSegments[#lookupSegments]
-        if string.lower(last):sub(-6) == ".rbxmx" then
-            lookupSegments[#lookupSegments] = string.sub(last, 1, #last - 7)
-        end
-    end
-    local inst = findInstance(ev.target, lookupSegments)
-    instanceCache[key] = nil
-    if not inst then
-        return
-    end
-
     if #ev.instancePath == 0 then
         logLine("Skipping delete of root target: " .. ev.target, "warn")
         return
     end
-
+    local inst = findInstance(ev.target, ev.instancePath)
+    instanceCache[key] = nil
+    if not inst then
+        return
+    end
     if inst:GetAttribute(ATTR) ~= key then
         logLine("Skipping delete of unmanaged " .. inst:GetFullName(), "warn")
         return
     end
     if ev.keepChildren and #inst:GetChildren() > 0 then
-        instanceCache[key] = replaceInstance(inst, "Folder")
+        instanceCache[key] = replaceInstance(inst, "Folder", isModelPath(ev.path))
     else
         inst:Destroy()
     end
 end
 
-local function pruneStale(validKeys)
+local function pruneStale(validKeys: { [string]: boolean })
     for _, inst in game:GetDescendants() do
         local key = inst:GetAttribute(ATTR)
-        if type(key) == "string" and not validKeys[key] then
-            local keepAsFolder = false
-            if inst:IsA("Folder") then
-                for _, d in inst:GetDescendants() do
-                    local dk = d:GetAttribute(ATTR)
-                    if type(dk) == "string" and validKeys[dk] then
-                        keepAsFolder = true
-                        break
-                    end
+        -- Parent is nil once an ancestor earlier in the list was destroyed.
+        if type(key) ~= "string" or validKeys[key] or not inst.Parent then
+            continue
+        end
+        local keepAsFolder = false
+        if inst:IsA("Folder") then
+            for _, d in inst:GetDescendants() do
+                local dk = d:GetAttribute(ATTR)
+                if type(dk) == "string" and validKeys[dk] then
+                    keepAsFolder = true
+                    break
                 end
             end
-            if not keepAsFolder then
-                inst:Destroy()
-            end
+        end
+        if not keepAsFolder then
+            inst:Destroy()
         end
     end
-    instanceCache = {}
+    table.clear(instanceCache)
 end
 
 local function applyBatch(resp)
@@ -874,9 +746,8 @@ local function applyBatch(resp)
         if resp.full then
             local valid = {}
             for _, ev in events do
-                valid[keyFor(ev.target, ev.instancePath)] = true
-                for i = 1, #ev.instancePath - 1 do
-                    valid[keyFor(ev.target, { table.unpack(ev.instancePath, 1, i) })] = true
+                for i = 1, #ev.instancePath do
+                    valid[keyFor(ev.target, ev.instancePath, i)] = true
                 end
             end
             pruneStale(valid)
@@ -888,108 +759,184 @@ local function applyBatch(resp)
                 applyCreateOrUpdate(ev)
             end
             if not resp.full then
-                logLine(string.format("[%s] %s", ev.op, ev.path))
+                logLine(string.format("%-6s %s", ev.op, ev.path))
             end
         end
         if resp.full then
-            logLine(string.format("Snapshot applied: %d files", #events), "ok")
+            logLine(string.format("Synced %d files", #events), "ok")
         end
     end)
     if recording then
         ChangeHistoryService:FinishRecording(
             recording,
-            ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel
+            if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
         )
     end
     if not ok then
-        logLine("Apply error: " .. tostring(err), "error")
+        logLine("Sync failed: " .. tostring(err), "error")
     end
 end
 
--- ---------- Polling ----------
+-- ---------- Connection ----------
 
-local function request(url, token)
+-- serverUrl reads the URL field, adding a scheme and dropping trailing slashes.
+local function serverUrl(): string
+    local url = string.match(urlBox.Text, "^%s*(.-)/*%s*$") or ""
+    if url == "" then
+        return DEFAULT_URL
+    end
+    if not string.find(url, "^%a[%w+.-]*://") then
+        url = "http://" .. url
+    end
+    return url
+end
+
+local function hostOf(url: string): string
+    return (string.gsub(url, "^%a[%w+.-]*://", ""))
+end
+
+-- httpGet returns the status code and, on success, the decoded JSON body.
+-- It throws when the request never reaches a server.
+local function httpGet(url: string, token: string): (number, any)
     local headers = {}
     if token ~= "" then
         headers["X-ChainLink-Token"] = token
     end
     local res = HttpService:RequestAsync({ Url = url, Method = "GET", Headers = headers })
     if not res.Success then
-        error(string.format("HTTP %d %s", res.StatusCode, res.StatusMessage))
+        return res.StatusCode, nil
     end
-    return HttpService:JSONDecode(res.Body)
+    return res.StatusCode, HttpService:JSONDecode(res.Body)
 end
 
-local function pollLoop(baseUrl, token)
-    local backoff = 1
-    local fatal = false
-    local skip = false
-    while running do
+local function stop(tone: Tone, title: string, detail: string)
+    generation += 1
+    running = false
+    setStatus(tone, title, detail)
+end
+
+local function needToken(message: string)
+    tokenRow.Visible = true
+    stop("error", "Token required", message)
+end
+
+local function pollLoop(gen: number, baseUrl: string, token: string)
+    local host = hostOf(baseUrl)
+    local connected = false
+    local backoff = 0
+    while gen == generation do
         local url = string.format("%s/changes?since=%d&session=%s", baseUrl, lastSeq, HttpService:UrlEncode(sessionId))
-        local ok, result = pcall(request, url, token)
-        if not running then
-            break
+        local ok, code, body = pcall(httpGet, url, token)
+        if gen ~= generation then
+            return
         end
 
-        if ok then
-            if backoff > 1 then
+        if ok and code == 200 then
+            if not connected then
+                logLine("Connected to " .. host, "ok")
+            elseif backoff > 0 then
                 logLine("Reconnected", "ok")
             end
-            backoff = 1
-            setStatus(true, "Connected (" .. baseUrl .. ")")
-
-            if result.sessionId ~= sessionId then
-                sessionId = result.sessionId
-            end
-
-            applyBatch(result)
-            lastSeq = result.seq
-        else
-            local msg = tostring(result)
-            if string.find(msg, "not enabled", 1, true) then
-                logLine("Enable HTTP requests: Game Settings > Security > Allow HTTP Requests", "error")
-                running = false
-                fatal = true
-                break
-            elseif string.find(msg, "requests exceeded limit", 1, true) then
-                logLine("Roblox HTTP limit reached. Backing off...", "warn")
-                backoff = math.max(backoff * 2, 5)
-                setStatus(false, "Rate limited... backing off")
-                task.wait(backoff)
-                skip = true
-            end
-            if not skip then
-                setStatus(false, "Reconnecting… (" .. msg .. ")")
-                if backoff == 1 then
-                    logLine("Connection lost: " .. msg, "warn")
-                end
-                task.wait(backoff)
-                backoff = math.min(backoff * 2, 10)
-            end
-            skip = false
+            connected = true
+            backoff = 0
+            setStatus("connected", "Connected", "Syncing with " .. host)
+            sessionId = body.sessionId
+            applyBatch(body)
+            lastSeq = body.seq
+            continue
         end
+
+        if ok and code == 401 then
+            logLine("Server rejected the token", "error")
+            needToken("The server rejected the token. Copy it from chainlink.json.")
+            return
+        end
+
+        local msg = if ok then string.format("HTTP %d", code) else tostring(code)
+        if string.find(msg, "not enabled", 1, true) then
+            logLine("HTTP requests are disabled", "error")
+            stop("error", "HTTP requests are off", "Turn on Game Settings > Security > Allow HTTP Requests.")
+            return
+        end
+        if not connected then
+            logLine("Couldn't connect to " .. host .. ": " .. msg, "error")
+            stop(
+                "error",
+                "Couldn't connect",
+                if ok then host .. " answered " .. msg .. "." else "No server at " .. host .. ". " .. IDLE_DETAIL
+            )
+            return
+        end
+
+        if backoff == 0 then
+            logLine("Connection lost: " .. msg, "warn")
+        end
+        if string.find(msg, "exceeded limit", 1, true) then
+            backoff = math.clamp(backoff * 2, 5, 30)
+            setStatus("busy", "Rate limited", "Roblox's HTTP limit was reached. Retrying in " .. backoff .. "s.")
+        else
+            backoff = math.clamp(backoff * 2, 1, 10)
+            setStatus(
+                "busy",
+                "Reconnecting…",
+                "Lost the connection to " .. host .. ". Retrying in " .. backoff .. "s."
+            )
+        end
+        task.wait(backoff)
     end
-    setStatus(false, fatal and "HTTP disabled" or "Disconnected")
 end
 
 local function connect()
-    local baseUrl = string.gsub(urlBox.Text, "/+$", "")
+    local baseUrl = serverUrl()
     local token = tokenBox.Text
+    urlBox.Text = baseUrl
     plugin:SetSetting(SETTING_URL, baseUrl)
     plugin:SetSetting(SETTING_TOKEN, token)
 
+    generation += 1
     running = true
     lastSeq = 0
     sessionId = ""
-    setStatus(false, "Connecting…")
-    logLine("Connecting to " .. baseUrl)
-    task.spawn(pollLoop, baseUrl, token)
+    setStatus("busy", "Connecting…", hostOf(baseUrl))
+    logLine("Connecting to " .. baseUrl, "dim")
+    task.spawn(pollLoop, generation, baseUrl, token)
 end
 
 local function disconnect()
-    running = false
-    setStatus(false, "Disconnected")
+    stop("idle", "Disconnected", "Synced instances stay in place. Connect to resume syncing.")
     logLine("Disconnected", "dim")
+end
+
+-- probe checks for a running server without connecting. With reveal set it
+-- opens the panel so the user sees the prompt to connect.
+local function probe(reveal: boolean)
+    if running or probing then
+        return
+    end
+    probing = true
+    local gen = generation
+    local baseUrl = serverUrl()
+    local ok, code = pcall(httpGet, baseUrl .. "/health", tokenBox.Text)
+    -- A connect or disconnect while the probe was out owns the status now.
+    if gen == generation then
+        local host = hostOf(baseUrl)
+        if ok and code == 200 then
+            setStatus(
+                "found",
+                "Server found",
+                "chainlink serve is running at " .. host .. ". Connect to start syncing."
+            )
+        elseif ok and code == 401 then
+            tokenRow.Visible = true
+            setStatus("found", "Server found", "The server at " .. host .. " needs a token. Enter it, then connect.")
+        else
+            setStatus("idle", "Not connected", IDLE_DETAIL)
+        end
+        if reveal and ok and (code == 200 or code == 401) then
+            widget.Enabled = true
+        end
+    end
+    probing = false
 end
 
 connectButton.MouseButton1Click:Connect(function()
@@ -1000,17 +947,36 @@ connectButton.MouseButton1Click:Connect(function()
     end
 end)
 
+urlBox.FocusLost:Connect(function()
+    if running then
+        return
+    end
+    urlBox.Text = serverUrl()
+    plugin:SetSetting(SETTING_URL, urlBox.Text)
+    task.spawn(probe, false)
+end)
+
+tokenBox.FocusLost:Connect(function()
+    plugin:SetSetting(SETTING_TOKEN, tokenBox.Text)
+end)
+
 toggleButton.Click:Connect(function()
     widget.Enabled = not widget.Enabled
 end)
 
 widget:GetPropertyChangedSignal("Enabled"):Connect(function()
     toggleButton:SetActive(widget.Enabled)
+    if widget.Enabled then
+        task.spawn(probe, false)
+    end
 end)
 
 plugin.Unloading:Connect(function()
+    generation += 1
     running = false
+    themeConnection:Disconnect()
 end)
 
-setStatus(false, "Disconnected")
-logLine("ChainLink ready. Run `chainlink serve` and press Connect.", "dim")
+toggleButton:SetActive(widget.Enabled)
+setStatus("idle", "Not connected", IDLE_DETAIL)
+task.spawn(probe, true)

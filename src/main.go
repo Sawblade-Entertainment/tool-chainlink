@@ -160,7 +160,7 @@ func main() {
 		}
 	case "build":
 		if len(os.Args) < 3 {
-			usageFail("chainlink build <output.rbxlx>")
+			usageFail("chainlink build <output.rbxl|.rbxlx|.rbxm|.rbxmx>")
 		}
 		if err := handleBuild(os.Args[2]); err != nil {
 			fail("building", err)
@@ -201,7 +201,7 @@ var usageCommands = [][2]string{
 	{"add <spec> [--tool|--package]", "Add a tool (owner/repo@tag) or package (scope/name@version)"},
 	{"remove <name>", "Remove a tool or package from chain.toml"},
 	{"serve", "Start the live-sync server for the Studio plugin"},
-	{"build <output.rbxlx>", "Build the project into a place file"},
+	{"build <output>", "Build a place (.rbxl/.rbxlx) or src/ as a model (.rbxm/.rbxmx)"},
 	{"sourcemap [-o <file>]", "Write a Rojo-compatible sourcemap"},
 	{"plugin", "Install the ChainLink Studio plugin"},
 	{"login", "Authenticate with a package registry"},
