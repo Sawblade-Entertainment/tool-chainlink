@@ -22,7 +22,7 @@ If you have Go installed on your system, you can build ChainLink directly from t
 ```bash
 git clone https://github.com/Sawblade/ChainLink.git
 cd ChainLink
-go build -o chainlink .
+make        # runs tests, then builds all platforms into bin/
 ```
 
 ## Global Installation

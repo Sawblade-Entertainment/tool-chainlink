@@ -9,7 +9,7 @@ Download the binary for your platform from the [Releases](https://github.com/Saw
 
 ### From Source
 ```bash
-go build -o chainlink .
+make        # runs tests, then builds all platforms into bin/
 ```
 
 ## Usage

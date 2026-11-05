@@ -1,6 +1,6 @@
 # Publishing
 
-ChainLink allows you to publish your project as a package to a Wally-compatible registry.
+ChainLink allows you to publish your project as a package to a package registry.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ When you run `chainlink publish`, the following happens:
 
 ## Registry Configuration
 
-By default, ChainLink uses the standard Wally index. However, you can specify a custom registry in your `chain.toml` (though the current CLI implementation primarily derives the API from the registry index config).
+By default, ChainLink uses the standard package index. However, you can specify a custom registry in your `chain.toml` (though the current CLI implementation primarily derives the API from the registry index config).
 
 ## Constraints
 - **Size Limit**: Packages must be under 2MB.

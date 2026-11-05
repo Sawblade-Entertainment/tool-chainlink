@@ -10,10 +10,10 @@ import (
 	"strings"
 )
 
-// wallyRegistryAPI is a variable so tests can point it at an httptest server.
-var wallyRegistryAPI = "https://api.wally.run/v1/package-contents"
+// packageRegistryAPI is a variable so tests can point it at an httptest server.
+var packageRegistryAPI = "https://api.wally.run/v1/package-contents"
 
-// InstallPackageList installs a list of wally packages from a map where keys are aliases and values are package names (e.g., "vibeonline/razorinput@0.1.0")
+// InstallPackageList installs a list of packages from a map where keys are aliases and values are package names (e.g., "vibeonline/razorinput@0.1.0")
 func InstallPackageList(packages map[string]string) error {
 	for _, alias := range slices.Sorted(maps.Keys(packages)) {
 		packageName := packages[alias]
@@ -46,8 +46,8 @@ func packageInstallDir(home, scope, name, version string) string {
 	return filepath.Join(home, ".chainlink", "packages", scope+"_"+name, version)
 }
 
-// InstallPackage installs a wally package by its name (e.g., "vibeonline/razorinput@0.1.0")
-// It downloads the package zip directly from the Wally registry and extracts it.
+// InstallPackage installs a package by its name (e.g., "vibeonline/razorinput@0.1.0")
+// It downloads the package zip directly from the package registry and extracts it.
 func InstallPackage(alias, packageName string) error {
 	scope, name, version, err := parsePackageSpec(packageName)
 	if err != nil {
@@ -67,7 +67,7 @@ func InstallPackage(alias, packageName string) error {
 	}
 
 	// Construct the registry URL
-	url := fmt.Sprintf("%s/%s/%s/%s", wallyRegistryAPI, scope, name, version)
+	url := fmt.Sprintf("%s/%s/%s/%s", packageRegistryAPI, scope, name, version)
 
 	status("Downloading", sgrCyan, "%s", packageName)
 
@@ -76,7 +76,7 @@ func InstallPackage(alias, packageName string) error {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
-	// Use the official Wally CLI User-Agent to avoid 426 Upgrade Required errors
+	// Use the official registry CLI User-Agent to avoid 426 Upgrade Required errors
 	req.Header.Set("User-Agent", "wally/0.3.2")
 	req.Header.Set("Wally-Version", "0.3.2")
 

@@ -45,17 +45,17 @@ func TestParsePackageSpec(t *testing.T) {
 	}
 }
 
-// installFakeWally serves package zips by "scope/name/version".
-type installFakeWally struct {
+// installFakePackageRegistry serves package zips by "scope/name/version".
+type installFakePackageRegistry struct {
 	pkgs      map[string][]byte
 	fail      atomic.Bool
 	requests  atomic.Int64
 	userAgent atomic.Value
 }
 
-func installNewFakeWally(t testing.TB) *installFakeWally {
+func installNewFakePackageRegistry(t testing.TB) *installFakePackageRegistry {
 	t.Helper()
-	w := &installFakeWally{pkgs: map[string][]byte{}}
+	w := &installFakePackageRegistry{pkgs: map[string][]byte{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		w.requests.Add(1)
 		w.userAgent.Store(r.Header.Get("User-Agent") + " " + r.Header.Get("Wally-Version"))
@@ -71,13 +71,13 @@ func installNewFakeWally(t testing.TB) *installFakeWally {
 		rw.Write(body)
 	}))
 	t.Cleanup(srv.Close)
-	old := wallyRegistryAPI
-	wallyRegistryAPI = srv.URL + "/v1/package-contents"
-	t.Cleanup(func() { wallyRegistryAPI = old })
+	old := packageRegistryAPI
+	packageRegistryAPI = srv.URL + "/v1/package-contents"
+	t.Cleanup(func() { packageRegistryAPI = old })
 	return w
 }
 
-func installWallyHome(t testing.TB) string {
+func installPackageHome(t testing.TB) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -85,8 +85,8 @@ func installWallyHome(t testing.TB) string {
 }
 
 func TestInstallPackage(t *testing.T) {
-	home := installWallyHome(t)
-	w := installNewFakeWally(t)
+	home := installPackageHome(t)
+	w := installNewFakePackageRegistry(t)
 	w.pkgs["sleitnick/knit/1.7.0"] = installMakeZip(t, []installEntry{
 		{Name: "wally.toml", Body: "[package]"},
 		{Name: "src/", Dir: true},
@@ -111,8 +111,8 @@ func TestInstallPackage(t *testing.T) {
 
 // Regression: every package was downloaded before the installed check.
 func TestInstallPackageSkipsInstalledWithoutRequest(t *testing.T) {
-	home := installWallyHome(t)
-	w := installNewFakeWally(t)
+	home := installPackageHome(t)
+	w := installNewFakePackageRegistry(t)
 	os.MkdirAll(filepath.Join(home, ".chainlink", "packages", "sleitnick_knit", "1.7.0"), 0755)
 
 	if err := InstallPackage("Knit", "sleitnick/knit@1.7.0"); err != nil {
@@ -126,8 +126,8 @@ func TestInstallPackageSkipsInstalledWithoutRequest(t *testing.T) {
 // Regression: a failed extract used to leave the version dir behind, and the
 // next install skipped the broken package.
 func TestInstallPackageFailureRetries(t *testing.T) {
-	home := installWallyHome(t)
-	w := installNewFakeWally(t)
+	home := installPackageHome(t)
+	w := installNewFakePackageRegistry(t)
 	dir := filepath.Join(home, ".chainlink", "packages", "sleitnick_knit", "1.7.0")
 
 	w.pkgs["sleitnick/knit/1.7.0"] = []byte("not a zip")
@@ -160,8 +160,8 @@ func TestInstallPackageFailureRetries(t *testing.T) {
 }
 
 func TestInstallPackageRejectsTraversal(t *testing.T) {
-	home := installWallyHome(t)
-	w := installNewFakeWally(t)
+	home := installPackageHome(t)
+	w := installNewFakePackageRegistry(t)
 	w.pkgs["evil/pkg/1.0.0"] = installMakeZip(t, []installEntry{
 		{Name: "init.luau", Body: "ok"},
 		{Name: "../../../../evil.luau", Body: "pwned"},
@@ -180,8 +180,8 @@ func TestInstallPackageRejectsTraversal(t *testing.T) {
 }
 
 func TestInstallPackageRejectsBadSpec(t *testing.T) {
-	installWallyHome(t)
-	w := installNewFakeWally(t)
+	installPackageHome(t)
+	w := installNewFakePackageRegistry(t)
 	for _, spec := range []string{"scope/name@../../x", "scope/name", "../x@1"} {
 		if err := InstallPackage("x", spec); err == nil {
 			t.Errorf("InstallPackage(%q) succeeded", spec)
@@ -193,8 +193,8 @@ func TestInstallPackageRejectsBadSpec(t *testing.T) {
 }
 
 func TestInstallPackageList(t *testing.T) {
-	home := installWallyHome(t)
-	w := installNewFakeWally(t)
+	home := installPackageHome(t)
+	w := installNewFakePackageRegistry(t)
 	pkgs := map[string]string{}
 	for _, n := range []string{"a", "b", "c"} {
 		w.pkgs["s/"+n+"/1.0.0"] = installMakeZip(t, []installEntry{{Name: "init.luau", Body: n}})
@@ -221,8 +221,8 @@ func TestInstallPackageList(t *testing.T) {
 // BenchmarkInstallPackageInstalled is the common `chainlink install` path:
 // the package is already in ~/.chainlink/packages.
 func BenchmarkInstallPackageInstalled(b *testing.B) {
-	home := installWallyHome(b)
-	w := installNewFakeWally(b)
+	home := installPackageHome(b)
+	w := installNewFakePackageRegistry(b)
 	w.pkgs["sleitnick/knit/1.7.0"] = installMakeZip(b, installBenchEntries())
 	os.MkdirAll(filepath.Join(home, ".chainlink", "packages", "sleitnick_knit", "1.7.0"), 0755)
 
@@ -241,8 +241,8 @@ func BenchmarkInstallPackageInstalled(b *testing.B) {
 
 // BenchmarkInstallPackageFresh measures a full download and extract.
 func BenchmarkInstallPackageFresh(b *testing.B) {
-	home := installWallyHome(b)
-	w := installNewFakeWally(b)
+	home := installPackageHome(b)
+	w := installNewFakePackageRegistry(b)
 	w.pkgs["sleitnick/knit/1.7.0"] = installMakeZip(b, installBenchEntries())
 	pkgDir := filepath.Join(home, ".chainlink", "packages", "sleitnick_knit")
 

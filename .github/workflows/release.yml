@@ -6,35 +6,15 @@ on:
       - 'v*'
 
 jobs:
-  build:
-    name: Build for ${{ matrix.os }} (${{ matrix.arch }})
+  test:
+    name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
+      fail-fast: true
       matrix:
-        include:
-          - os: ubuntu-latest
-            arch: amd64
-            goos: linux
-            goarch: amd64
-          - os: ubuntu-latest
-            arch: arm64
-            goos: linux
-            goarch: arm64
-          - os: macos-latest
-            arch: amd64
-            goos: darwin
-            goarch: amd64
-          - os: macos-latest
-            arch: arm64
-            goos: darwin
-            goarch: arm64
-          - os: windows-latest
-            arch: amd64
-            goos: windows
-            goarch: amd64
-
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,25 +22,38 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23' # Use stable version (go.mod listed 1.27.2)
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
 
-      - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+      - name: Test
         shell: bash
-        run: |
-          BINARY_NAME=chainlink
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            BINARY_NAME=chainlink.exe
-          fi
-          go build -o build/$BINARY_NAME .
+        run: make test
+
+  build:
+    name: Build binaries
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      # Tests already passed in the test job; build only.
+      - name: Build
+        run: make build
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build/
+          name: binaries
+          path: bin/
 
   release:
     name: Create Release
@@ -69,26 +62,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download all artifacts
+      - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-
-      - name: Prepare release assets
-        run: |
-          rm -rf release
-          mkdir release
-          for dir in artifacts/build-*; do
-            [ -d "$dir" ] || continue
-            platform=$(basename "$dir" | sed 's/build-//')
-            file=$(find "$dir" -type f -name "chainlink*" | head -n 1)
-            if [ -n "$file" ]; then
-              cp "$file" "release/chainlink-$platform"
-            fi
-          done
+          name: binaries
+          path: release
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -844,7 +844,7 @@ func handleLogin(args []string) error {
 }
 
 func promptAPIKey(api string) error {
-	fmt.Printf("Wally requires an API key to publish to %s.\n", bold(api))
+	fmt.Printf("The package registry requires an API key to publish to %s.\n", bold(api))
 	fmt.Printf("%s %s ", paint(colorOut, "?", sgrBold, sgrCyan), bold("Enter an API key:"))
 
 	var key string
@@ -997,11 +997,11 @@ func (g githubDeviceFlow) run(api, clientID string) error {
 	}
 }
 
-type wallyManifest struct {
-	Package wallyManifestPackage `toml:"package"`
+type packageManifest struct {
+	Package packageManifestPackage `toml:"package"`
 }
 
-type wallyManifestPackage struct {
+type packageManifestPackage struct {
 	Name        string `toml:"name"`
 	Version     string `toml:"version"`
 	Registry    string `toml:"registry"`
@@ -1011,13 +1011,13 @@ type wallyManifestPackage struct {
 	Realm       string `toml:"realm"`
 }
 
-// buildWallyManifest renders the wally.toml uploaded with a published package.
+// buildPackageManifest renders the manifest (wally.toml) uploaded with a published package.
 // Values go through the TOML encoder so quotes, backslashes and newlines are escaped.
-func buildWallyManifest(pkg PackageInfo, registry string) ([]byte, error) {
+func buildPackageManifest(pkg PackageInfo, registry string) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := toml.NewEncoder(&buf)
 	enc.Indent = ""
-	err := enc.Encode(wallyManifest{Package: wallyManifestPackage{
+	err := enc.Encode(packageManifest{Package: packageManifestPackage{
 		Name:        pkg.Name,
 		Version:     pkg.Version,
 		Registry:    registry,
@@ -1147,7 +1147,7 @@ func handlePublish(args []string) error {
 	// Fetch the registry from the project's config to include it in the manifest
 	registry := projectRegistry(".")
 
-	manifest, err := buildWallyManifest(config.Package, registry)
+	manifest, err := buildPackageManifest(config.Package, registry)
 	if err != nil {
 		return fmt.Errorf("failed to create wally.toml: %w", err)
 	}
@@ -1157,7 +1157,7 @@ func handlePublish(args []string) error {
 		return fmt.Errorf("failed to create zip: %w", err)
 	}
 
-	status("Uploading", sgrCyan, "to the Wally registry %s", dim(fmt.Sprintf("(%d KiB)", zipData.Len()/1024)))
+	status("Uploading", sgrCyan, "to the package registry %s", dim(fmt.Sprintf("(%d KiB)", zipData.Len()/1024)))
 
 	if zipData.Len() > 2*1024*1024 {
 		return fmt.Errorf("package size exceeds 2MB. Reduce package size and try again")

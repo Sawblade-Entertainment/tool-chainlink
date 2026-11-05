@@ -181,12 +181,12 @@ func TestConfirmDownloads(t *testing.T) {
 }
 
 // uiInstallProject writes a chain.toml with one package and a fake registry for it.
-func uiInstallProject(t *testing.T) (home string, w *installFakeWally) {
+func uiInstallProject(t *testing.T) (home string, w *installFakePackageRegistry) {
 	t.Helper()
 	home = cliSetHome(t)
 	cliChdirTemp(t)
 	cliWriteFile(t, "chain.toml", "[Packages]\nKnit = \"sleitnick/knit@1.7.0\"\n", 0644)
-	w = installNewFakeWally(t)
+	w = installNewFakePackageRegistry(t)
 	w.pkgs["sleitnick/knit/1.7.0"] = installMakeZip(t, []installEntry{{Name: "src/init.luau", Body: "return {}"}})
 	return home, w
 }

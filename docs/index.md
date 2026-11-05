@@ -8,7 +8,7 @@ In Roblox development, tools like linters (Selene), formatters, and libraries ca
 
 - **Deterministic Environments**: All team members use the same tool versions.
 - **Simplified Onboarding**: New developers can run `chainlink install` to set up their entire environment.
-- **Integrated Publishing**: Easily publish your own libraries to Wally-compatible registries.
+- **Integrated Publishing**: Easily publish your own libraries to package registries.
 - **Transparent Tool Execution**: Use tool proxying to run managed tools as if they were installed globally.
 
 ## Core Concepts
@@ -17,7 +17,7 @@ In Roblox development, tools like linters (Selene), formatters, and libraries ca
 ChainLink distinguishes between **Tools** (executable binaries used for development, like `selene`) and **Packages** (code libraries used within the project).
 
 ### The Registry
-ChainLink interacts with registries (like the Wally index) to resolve and download the correct versions of packages and tools.
+ChainLink interacts with registries (like the package index) to resolve and download the correct versions of packages and tools.
 
 ### Proxying
 One of ChainLink's most powerful features is its ability to act as a proxy. By creating a symlink from a tool's name to the `chainlink` binary, ChainLink can intercept the call, look up the required version in `chain.toml`, and execute the correct binary automatically.

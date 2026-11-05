@@ -438,13 +438,13 @@ func TestProjectRegistry(t *testing.T) {
 	tests := []struct {
 		name  string
 		chain string
-		wally string
+		legacy string
 		want  string
 	}{
 		{"chain lowercase", "[package]\nregistry = \"https://github.com/a/chain\"\n", "", "https://github.com/a/chain"},
 		{"chain capitalized", "[Package]\nregistry = \"https://github.com/a/cap\"\n", "", "https://github.com/a/cap"},
-		{"wally only", "[Package]\nName = \"x\"\n", "[package]\nregistry = \"https://github.com/a/wally\"\n", "https://github.com/a/wally"},
-		{"chain wins", "[package]\nregistry = \"https://github.com/a/chain\"\n", "[package]\nregistry = \"https://github.com/a/wally\"\n", "https://github.com/a/chain"},
+		{"legacy only", "[Package]\nName = \"x\"\n", "[package]\nregistry = \"https://github.com/a/legacy\"\n", "https://github.com/a/legacy"},
+		{"chain wins", "[package]\nregistry = \"https://github.com/a/chain\"\n", "[package]\nregistry = \"https://github.com/a/legacy\"\n", "https://github.com/a/chain"},
 		{"neither", "", "", defaultRegistry},
 		{"malformed", "[package\n", "registry = = \n", defaultRegistry},
 	}
@@ -454,8 +454,8 @@ func TestProjectRegistry(t *testing.T) {
 			if tt.chain != "" {
 				cliWriteFile(t, filepath.Join(dir, "chain.toml"), tt.chain, 0644)
 			}
-			if tt.wally != "" {
-				cliWriteFile(t, filepath.Join(dir, "wally.toml"), tt.wally, 0644)
+			if tt.legacy != "" {
+				cliWriteFile(t, filepath.Join(dir, "wally.toml"), tt.legacy, 0644)
 			}
 			if got := projectRegistry(dir); got != tt.want {
 				t.Fatalf("projectRegistry = %q, want %q", got, tt.want)
@@ -680,7 +680,7 @@ func TestGithubDeviceFlowStartFailure(t *testing.T) {
 }
 
 // Regression: the manifest used to be built with fmt.Sprintf and no escaping.
-func TestBuildWallyManifest(t *testing.T) {
+func TestBuildPackageManifest(t *testing.T) {
 	pkg := PackageInfo{
 		Name:        "me/lib",
 		Version:     "1.0.0",
@@ -688,7 +688,7 @@ func TestBuildWallyManifest(t *testing.T) {
 		Description: "A \"fast\" lib\\with C:\\paths\nand newlines\"\nrealm = \"server",
 		Website:     "https://example.com/?a=\"b\"",
 	}
-	data, err := buildWallyManifest(pkg, "https://github.com/a/index")
+	data, err := buildPackageManifest(pkg, "https://github.com/a/index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1149,7 @@ func cliBenchTree(b *testing.B) string {
 // zip straight from src into memory (~4.6ms/op, 7.2MB/op, 5.4k allocs/op).
 func BenchmarkPublishPackaging(b *testing.B) {
 	dir := cliBenchTree(b)
-	manifest, err := buildWallyManifest(PackageInfo{Name: "a/b", Version: "1.0.0"}, defaultRegistry)
+	manifest, err := buildPackageManifest(PackageInfo{Name: "a/b", Version: "1.0.0"}, defaultRegistry)
 	if err != nil {
 		b.Fatal(err)
 	}
