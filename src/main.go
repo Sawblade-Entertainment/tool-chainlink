@@ -551,6 +551,29 @@ func replaceFileFrom(path string, r io.Reader, perm os.FileMode) (err error) {
 	if err = tmp.Close(); err != nil {
 		return err
 	}
+	if runtime.GOOS == "windows" {
+		oldPath := path + ".old"
+		if err = os.Remove(oldPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if _, statErr := os.Lstat(path); statErr == nil {
+			if err = os.Rename(path, oldPath); err != nil {
+				return err
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		if err = os.Rename(tmp.Name(), path); err != nil {
+			if restoreErr := os.Rename(oldPath, path); restoreErr != nil && !errors.Is(restoreErr, os.ErrNotExist) {
+				return fmt.Errorf("failed to install replacement: %v; failed to restore previous file: %w", err, restoreErr)
+			}
+			return err
+		}
+		if err = os.Remove(oldPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("installed replacement but failed to remove backup %s: %w", oldPath, err)
+		}
+		return nil
+	}
 	return os.Rename(tmp.Name(), path)
 }
 

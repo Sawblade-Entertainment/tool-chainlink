@@ -443,6 +443,9 @@ func chainlinkBinaryName(goos string) string {
 // proxies the call to the installed tool.
 func linkTool(home, toolName string) error {
 	globalBinDir := filepath.Join(home, ".chainlink", "bin")
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(toolName), ".exe") {
+		toolName += ".exe"
+	}
 	if err := os.MkdirAll(globalBinDir, 0755); err != nil {
 		return fmt.Errorf("failed to create global bin directory: %w", err)
 	}
@@ -474,7 +477,19 @@ func toolSymlinkTarget(home string) (string, error) {
 
 // ensureSymlink makes link point at target, leaving a correct link untouched.
 func ensureSymlink(target, link string) error {
-	if filepath.Clean(target) == filepath.Clean(link) {
+	cleanTarget, cleanLink := filepath.Clean(target), filepath.Clean(link)
+	samePath := cleanTarget == cleanLink
+	if runtime.GOOS == "windows" && strings.EqualFold(cleanTarget, cleanLink) {
+		samePath = true
+	}
+	if !samePath {
+		targetInfo, targetErr := os.Stat(target)
+		linkInfo, linkErr := os.Stat(link)
+		if targetErr == nil && linkErr == nil && os.SameFile(targetInfo, linkInfo) {
+			samePath = true
+		}
+	}
+	if samePath {
 		return fmt.Errorf("refusing to replace %s with a link to itself", link)
 	}
 	if current, err := os.Readlink(link); err == nil && current == target {

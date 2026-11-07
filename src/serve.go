@@ -833,13 +833,14 @@ func bootstrapEvents(cfg ProjectConfig) []Event {
 			log.Printf("%s could not read embedded bootstrap file %s: %v", logWarn(), bs.File, err)
 			continue
 		}
+		source := strings.ReplaceAll(string(data), "\r\n", "\n")
 		out = append(out, Event{
 			Op:           "CREATE",
 			Path:         bs.File,
 			Target:       r.Target,
 			InstancePath: []string{"init"},
 			ClassName:    bs.Class,
-			Source:       addLuauHeader(string(data)),
+			Source:       addLuauHeader(source),
 		})
 	}
 	return out

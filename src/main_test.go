@@ -904,6 +904,13 @@ func TestInstallBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer old.Close()
+	// Windows does not allow renaming a file while this test's handle is open
+	// (os.Open does not share delete access), unlike a running Unix executable.
+	if runtime.GOOS == "windows" {
+		if err := old.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if err := installBinary(src, dst); err != nil {
 		t.Fatal(err)
