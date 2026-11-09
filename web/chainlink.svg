@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <title>ChainLink</title>
+  <rect width="200" height="200" rx="40" fill="#000"/>
+  <path d="M100.0 22.0 L124.8 7.3 L132.8 11.9 L128.7 27.5 L139.0 32.5 L167.9 32.1 L172.4 40.1 L161.1 51.6 L167.5 61.0 L192.7 75.2 L192.7 84.3 L177.2 88.6 L178.0 100.0 L192.7 124.8 L188.1 132.8 L172.5 128.7 L167.5 139.0 L167.9 167.9 L159.9 172.4 L148.4 161.1 L139.0 167.5 L124.8 192.7 L115.7 192.7 L111.4 177.2 L100.0 178.0 L75.2 192.7 L67.2 188.1 L71.3 172.5 L61.0 167.5 L32.1 167.9 L27.6 159.9 L38.9 148.4 L32.5 139.0 L7.3 124.8 L7.3 115.7 L22.8 111.4 L22.0 100.0 L7.3 75.2 L11.9 67.2 L27.5 71.3 L32.5 61.0 L32.1 32.1 L40.1 27.6 L51.6 38.9 L61.0 32.5 L75.2 7.3 L84.3 7.3 L88.6 22.8 Z" fill="#fff"/>
+  <circle cx="100" cy="100" r="66" fill="#000"/>
+  <g transform="translate(100 100) rotate(-45)">
+    <rect x="-53" y="-17" width="58" height="34" rx="17" fill="none" stroke="#000" stroke-width="20"/><rect x="-53" y="-17" width="58" height="34" rx="17" fill="none" stroke="#fff" stroke-width="10"/>
+    <rect x="-5" y="-17" width="58" height="34" rx="17" fill="none" stroke="#000" stroke-width="20"/><rect x="-5" y="-17" width="58" height="34" rx="17" fill="none" stroke="#fff" stroke-width="10"/>
+    <path d="M-9.05 -16.74 A17 17 0 0 1 4.94 1.48" fill="none" stroke="#000" stroke-width="20"/><path d="M-9.05 -16.74 A17 17 0 0 1 4.94 1.48" fill="none" stroke="#fff" stroke-width="10"/>
+  </g>
+</svg>

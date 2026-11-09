@@ -24,8 +24,12 @@ jobs:
       - name: Install MkDocs
         run: pip install mkdocs mkdocs-terminal mkdocs-minify-plugin
 
+      # The download page is the site root; the docs live under /docs/.
       - name: Build MkDocs
-        run: mkdocs build
+        run: mkdocs build --site-dir site/docs
+
+      - name: Add download page
+        run: cp web/* site/
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

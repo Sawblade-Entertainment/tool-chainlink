@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChainLink</title>
+  <meta name="description" content="Download ChainLink, the tool and package manager for Roblox development.">
+  <link rel="icon" href="chainlink.svg" type="image/svg+xml">
+  <style>
+    :root {
+      --bg: #000;
+      --fg: #fff;
+      --muted: #9a9a9a;
+      --line: #2a2a2a;
+      --panel: #0d0d0d;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.6 var(--mono);
+    }
+    a { color: var(--fg); }
+    main { max-width: 760px; margin: 0 auto; padding: 48px 16px 64px; }
+    nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 64px; }
+    nav a { text-decoration: none; }
+    nav .links a { margin-left: 20px; color: var(--muted); }
+    nav .links a:hover { color: var(--fg); }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 700; }
+    .brand img { width: 32px; height: 32px; }
+
+    header { text-align: center; }
+    header img { width: 128px; height: 128px; }
+    h1 { font-size: 40px; margin: 16px 0 8px; letter-spacing: -0.02em; }
+    .tagline { color: var(--muted); margin: 0 auto 40px; max-width: 520px; }
+
+    .primary { text-align: center; }
+    .button {
+      display: inline-block;
+      background: var(--fg);
+      color: var(--bg);
+      padding: 14px 28px;
+      font: 700 16px var(--mono);
+      text-decoration: none;
+      border: 2px solid var(--fg);
+    }
+    .button:hover { background: var(--bg); color: var(--fg); }
+    .meta { color: var(--muted); font-size: 14px; margin-top: 12px; }
+    .meta a { color: var(--muted); }
+
+    pre {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 16px;
+      overflow-x: auto;
+      text-align: left;
+      font-size: 14px;
+    }
+    .steps { margin: 40px 0 0; }
+    .steps p { color: var(--muted); margin: 0 0 8px; font-size: 14px; }
+
+    details { margin-top: 48px; border-top: 1px solid var(--line); padding-top: 24px; }
+    summary { cursor: pointer; font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 400; }
+    tr.current td { color: var(--fg); font-weight: 700; }
+    td a { word-break: break-all; }
+
+    footer { margin-top: 64px; color: var(--muted); font-size: 14px; text-align: center; }
+    footer a { color: var(--muted); }
+
+    @media (max-width: 520px) {
+      nav { margin-bottom: 40px; }
+      h1 { font-size: 32px; }
+      .button { display: block; }
+      th:nth-child(2), td:nth-child(2) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <nav>
+      <a class="brand" href="./"><img src="chainlink.svg" alt="">ChainLink</a>
+      <span class="links">
+        <a href="docs/">Docs</a>
+        <a href="https://github.com/Sawblade-Entertainment/tool-chainlink">GitHub</a>
+      </span>
+    </nav>
+
+    <header>
+      <img src="chainlink.svg" alt="ChainLink logo">
+      <h1>ChainLink</h1>
+      <p class="tagline">Tool and package manager for Roblox development. Pin every tool and package in one <code>chain.toml</code>.</p>
+    </header>
+
+    <section class="primary">
+      <a class="button" id="primary-download" href="https://github.com/Sawblade-Entertainment/tool-chainlink/releases/latest">Download ChainLink</a>
+      <div class="meta">
+        <span id="primary-label">Latest release</span><span id="version"></span>
+        <span id="alternate"></span>
+      </div>
+    </section>
+
+    <section class="steps">
+      <p>Then run it once to install <code>chainlink</code> to <code>~/.chainlink/bin</code> and add it to your PATH:</p>
+      <pre id="install-steps"><code>./chainlink-&lt;os&gt;-&lt;arch&gt;</code></pre>
+      <p>New here? Read the <a href="docs/">documentation</a> to set up your first project.</p>
+    </section>
+
+    <details id="all-downloads">
+      <summary>Show all downloads</summary>
+      <table>
+        <thead><tr><th>Platform</th><th>Architecture</th><th>File</th></tr></thead>
+        <tbody id="download-rows"></tbody>
+      </table>
+      <p class="meta">Prefer building from source? See <a href="docs/setup/installation/">Installation</a>.</p>
+    </details>
+
+    <footer>
+      <a href="docs/">Documentation</a> ·
+      <a href="https://github.com/Sawblade-Entertainment/tool-chainlink/releases">Release notes</a> ·
+      <a href="https://github.com/Sawblade-Entertainment">Sawblade Entertainment</a>
+    </footer>
+  </main>
+
+  <script>
+    const REPO = "Sawblade-Entertainment/tool-chainlink";
+
+    // Must match PLATFORMS in the Makefile.
+    const BUILDS = [
+      { os: "windows", arch: "amd64", label: "Windows", archLabel: "x64" },
+      { os: "windows", arch: "arm64", label: "Windows", archLabel: "ARM64" },
+      { os: "darwin", arch: "arm64", label: "macOS", archLabel: "Apple Silicon" },
+      { os: "darwin", arch: "amd64", label: "macOS", archLabel: "Intel" },
+      { os: "linux", arch: "amd64", label: "Linux", archLabel: "x64" },
+      { os: "linux", arch: "arm64", label: "Linux", archLabel: "ARM64" },
+    ];
+
+    const fileName = (b) => `chainlink-${b.os}-${b.arch}${b.os === "windows" ? ".exe" : ""}`;
+    const downloadUrl = (b) => `https://github.com/${REPO}/releases/latest/download/${fileName(b)}`;
+
+    function detectOS() {
+      const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+      const ua = navigator.userAgent;
+      if (/win/i.test(platform) || /Windows/.test(ua)) return "windows";
+      if (/mac/i.test(platform) || /Mac OS X/.test(ua)) {
+        // iPhone/iPad can't run the CLI.
+        return /iPhone|iPad/.test(ua) || navigator.maxTouchPoints > 1 ? null : "darwin";
+      }
+      if (/Android/.test(ua)) return null;
+      if (/linux/i.test(platform) || /Linux|X11/.test(ua)) return "linux";
+      return null;
+    }
+
+    async function detectArch(os) {
+      // Chromium exposes the real CPU architecture.
+      if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+        try {
+          const { architecture } = await navigator.userAgentData.getHighEntropyValues(["architecture"]);
+          if (architecture) return architecture === "arm" ? "arm64" : "amd64";
+        } catch (_) {}
+      }
+      if (/aarch64|arm64/i.test(navigator.userAgent)) return "arm64";
+      if (os === "darwin") {
+        // Safari/Firefox report Intel even on Apple Silicon; the GPU name is the best hint.
+        try {
+          const gl = document.createElement("canvas").getContext("webgl");
+          const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
+          const renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : "";
+          if (/Intel/i.test(renderer)) return "amd64";
+        } catch (_) {}
+        return "arm64";
+      }
+      return "amd64";
+    }
+
+    function installSteps(b) {
+      const file = fileName(b);
+      if (b.os === "windows") return `.\\${file}`;
+      if (b.os === "darwin") return `chmod +x ${file}\nxattr -d com.apple.quarantine ${file}\n./${file}`;
+      return `chmod +x ${file}\n./${file}`;
+    }
+
+    function renderTable(current) {
+      const rows = document.getElementById("download-rows");
+      for (const b of BUILDS) {
+        const tr = document.createElement("tr");
+        if (b === current) tr.className = "current";
+        tr.innerHTML = `<td>${b.label}</td><td>${b.archLabel}</td><td><a href="${downloadUrl(b)}">${fileName(b)}</a></td>`;
+        rows.appendChild(tr);
+      }
+    }
+
+    async function init() {
+      const os = detectOS();
+      const arch = os && (await detectArch(os));
+      const current = BUILDS.find((b) => b.os === os && b.arch === arch);
+
+      if (current) {
+        const button = document.getElementById("primary-download");
+        button.href = downloadUrl(current);
+        button.textContent = `Download for ${current.label}`;
+        document.getElementById("primary-label").textContent = `${current.label} ${current.archLabel} · ${fileName(current)}`;
+        document.getElementById("install-steps").textContent = installSteps(current);
+
+        // Architecture detection can be wrong, so offer the sibling build.
+        const other = BUILDS.find((b) => b.os === current.os && b !== current);
+        document.getElementById("alternate").innerHTML =
+          ` · <a href="${downloadUrl(other)}">${other.archLabel} instead?</a>`;
+      } else {
+        document.getElementById("all-downloads").open = true;
+      }
+      renderTable(current);
+
+      try {
+        const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+        if (res.ok) {
+          const release = await res.json();
+          document.getElementById("version").textContent = ` · ${release.tag_name}`;
+        }
+      } catch (_) {}
+    }
+
+    init();
+  </script>
+</body>
+</html>
