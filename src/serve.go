@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,8 +44,9 @@ const (
 // ---------- Config ----------
 
 type RootMapping struct {
-	Dir    string `json:"dir"`
-	Target string `json:"target"`
+	Dir     string `json:"dir"`
+	Target  string `json:"target"`
+	Package bool   `json:"package,omitempty"` // Dir is the Target instance itself, like an installed package
 }
 
 type GlobalPackageMapping struct {
@@ -69,8 +72,9 @@ var bootstrapScripts = map[string]struct {
 }
 
 type ChainToml struct {
-	Packages         map[string]string `toml:"Packages"`
-	DisableBootstrap bool              `toml:"DisableBootstrap"`
+	Package          struct{ Name string } `toml:"Package"`
+	Packages         map[string]string     `toml:"Packages"`
+	DisableBootstrap bool                  `toml:"DisableBootstrap"`
 }
 
 // isBootstrapped reports whether a root dir is parented under an embedded init script.
@@ -106,11 +110,10 @@ func isUnder(base, p string) bool {
 
 // findPackageDir tries common on-disk layouts for "scope/name" + version.
 func findPackageDir(name, version string) string {
-	short := name[strings.LastIndex(name, "/")+1:]
 	candidates := []string{
 		strings.ReplaceAll(name, "/", "_") + "/" + version,
 		name + "/" + version,
-		short + "/" + version,
+		shortName(name) + "/" + version,
 		strings.ReplaceAll(name, "/", "_") + "@" + version,
 	}
 	for _, c := range candidates {
@@ -171,6 +174,12 @@ func loadConfig() ProjectConfig {
 			if len(file.Roots) > 0 {
 				cfg.Roots = file.Roots
 			}
+			for i, r := range cfg.Roots {
+				if r.Package && !strings.Contains(r.Target, ".") {
+					log.Printf("%s root %s/ has \"package\": true but target %q has no parent, so it is mapped as a plain root.", logWarn(), r.Dir, r.Target)
+					cfg.Roots[i].Package = false
+				}
+			}
 			cfg.Packages = file.Packages
 		}
 	}
@@ -183,10 +192,13 @@ func loadConfig() ProjectConfig {
 			if i := strings.LastIndex(spec, "@"); i > 0 {
 				name, version = spec[:i], spec[i+1:]
 			}
-			short := name[strings.LastIndex(name, "/")+1:]
+			if short := shortName(name); short == "" || strings.Contains(short, ".") {
+				log.Printf("%s dependency %q has no usable instance name (empty or contains '.'), so it will not be synced.", logWarn(), spec)
+				continue
+			}
 			cfg.Packages = append(cfg.Packages, GlobalPackageMapping{
 				PackageName: findPackageDir(name, version),
-				Target:      "ReplicatedStorage.packages." + short,
+				Target:      "ReplicatedStorage.packages." + shortName(name),
 			})
 		}
 	} else if !os.IsNotExist(err) {
@@ -206,7 +218,43 @@ func loadConfig() ProjectConfig {
 	}
 	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].PackageName < pkgs[j].PackageName })
 	cfg.Packages = pkgs
+
+	if root, ok := packageRoot(cfg, tomlCfg.Package.Name); ok {
+		cfg.Roots = append(cfg.Roots, root)
+	}
 	return cfg
+}
+
+// shortName: "scope/mylib" -> "mylib", the instance name under ReplicatedStorage.packages.
+func shortName(name string) string {
+	return strings.TrimSpace(name[strings.LastIndex(name, "/")+1:])
+}
+
+// packageRoot maps src/ to ReplicatedStorage.packages.<name> when src/ holds a package
+// entrypoint (init.luau) and no root or dependency already claims src/ or that target.
+func packageRoot(cfg ProjectConfig, name string) (RootMapping, bool) {
+	short := shortName(name)
+	if short == "" || (!fileExists(filepath.Join(packageSrcDir, "init.luau")) && !fileExists(filepath.Join(packageSrcDir, "init.lua"))) {
+		return RootMapping{}, false
+	}
+	if strings.Contains(short, ".") {
+		log.Printf("%s [Package] Name %q contains '.', so %s/ will not be synced as a package.", logWarn(), name, packageSrcDir)
+		return RootMapping{}, false
+	}
+	for _, r := range cfg.Roots {
+		dir := path.Clean(filepath.ToSlash(r.Dir))
+		if dir == "." || dir == packageSrcDir || strings.HasPrefix(dir, packageSrcDir+"/") {
+			return RootMapping{}, false
+		}
+	}
+	target := "ReplicatedStorage.packages." + short
+	for _, p := range cfg.Packages {
+		if p.Target == target {
+			log.Printf("%s dependency %s also maps to %s, so %s/ will not be synced as a package.", logWarn(), p.PackageName, target, packageSrcDir)
+			return RootMapping{}, false
+		}
+	}
+	return RootMapping{Dir: packageSrcDir, Target: target, Package: true}, true
 }
 
 func pkgKey(p GlobalPackageMapping) string { return p.PackageName + "\x00" + p.Target }
@@ -342,6 +390,11 @@ func mapPath(cfg ProjectConfig, rel string) (target string, base []string, rest 
 	for _, r := range cfg.Roots {
 		if rel == r.Dir || strings.HasPrefix(rel, r.Dir+"/") {
 			rest := strings.TrimPrefix(strings.TrimPrefix(rel, r.Dir), "/")
+			if r.Package {
+				// src/ becomes the package instance itself, so src/init.luau is its ModuleScript.
+				parent, name := splitTarget(r.Target)
+				return parent, []string{name}, rest, false, true
+			}
 			if isBootstrapped(cfg, r.Dir) {
 				// Everything in server/ or client/ lives under the embedded init script.
 				return r.Target, []string{"init"}, rest, true, true
@@ -641,15 +694,23 @@ func relParent(rel string) string {
 // promoteShadowed looks for another file that maps to the instance a removed
 // path owned (e.g. foo.lua shadowed by foo.luau, or foo.luau shadowed by
 // foo/init.luau) and returns a CREATE for the first one, which now owns it.
-// instDir is the rel dir holding the instance's name entries.
+// instDir is the rel dir holding the instance's name entries. gone's own dir is
+// searched too, since a package root's init sits in a dir with no instDir.
 func (s *Server) promoteShadowed(gone, instDir, target string, instPath []string) []Event {
-	if len(instPath) == 0 || instDir == "" {
+	if len(instPath) == 0 {
 		return nil
 	}
 	cfg := s.conf()
 	key := instanceKey(target, instPath)
 	name := instPath[len(instPath)-1]
-	for _, dir := range []string{instDir, instDir + "/" + name} {
+	var dirs []string
+	if instDir != "" {
+		dirs = append(dirs, instDir, instDir+"/"+name)
+	}
+	if d := relParent(gone); d != "" && !slices.Contains(dirs, d) {
+		dirs = append(dirs, d)
+	}
+	for _, dir := range dirs {
 		entries, err := os.ReadDir(s.absPath(dir)) // sorted, so the pick is deterministic
 		if err != nil {
 			continue
@@ -759,9 +820,10 @@ func writeLuauString(b *strings.Builder, s string) {
 }
 
 // walkFiles emits CREATE events for every syncable file under absDir.
-// Reports whether an init file sits directly at the mapped root.
+// Reports whether an init file directly in absDir became the root instance.
 func (s *Server) walkFiles(absDir string, out *[]Event) (rootInit bool) {
 	cfg := s.conf()
+	rootRel, _ := s.relPath(absDir)
 	filepath.Walk(absDir, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			logWalkErr(p, err)
@@ -776,7 +838,7 @@ func (s *Server) walkFiles(absDir string, out *[]Event) (rootInit bool) {
 		}
 		if ev, ok := s.fileEvent(rel, "CREATE"); ok && s.claim(ev) {
 			*out = append(*out, ev)
-			if c := classify(cfg, rel, false); c.IsInit && len(c.InstancePath) == 1 && strings.HasPrefix(rel, pkgPrefix) {
+			if c := classify(cfg, rel, false); c.IsInit && relParent(rel) == rootRel {
 				rootInit = true
 			}
 		}
@@ -811,7 +873,12 @@ func (s *Server) snapshot() []Event {
 	cfg := s.conf()
 	out := bootstrapEvents(cfg) // depth 1, so they sort before their children
 	for _, r := range cfg.Roots {
-		s.walkFiles(filepath.Join(s.root, r.Dir), &out)
+		absDir := filepath.Join(s.root, r.Dir)
+		if !s.walkFiles(absDir, &out) && r.Package && dirExists(absDir) {
+			// Without an init file the package root is still a Folder, like packageEvents.
+			c := classify(cfg, r.Dir, true)
+			out = append(out, Event{Op: "CREATE", Path: r.Dir, Target: c.Target, InstancePath: c.InstancePath, ClassName: "Folder"})
+		}
 	}
 	for _, p := range s.activePackages() {
 		out = append(out, s.packageEvents(p)...)
@@ -1070,6 +1137,9 @@ func (s *Server) reloadPackages() {
 	oldCfg := s.cfg
 	oldActive := s.active
 	newCfg := oldCfg // roots/port/token require a restart
+	if !slices.Equal(fresh.Roots, oldCfg.Roots) {
+		log.Printf("%s roots changed (%s or the %s/ package mapping); restart serve to apply them.", logWarn(), configFileName, packageSrcDir)
+	}
 	newCfg.Packages = fresh.Packages
 	newCfg.DisableBootstrap = fresh.DisableBootstrap
 	newActive := presentPackages(newCfg)

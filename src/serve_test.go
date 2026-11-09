@@ -518,6 +518,107 @@ missing = "scope/missing@1.0.0"
 	}
 }
 
+func TestLoadConfigPackageSrc(t *testing.T) {
+	serveFakeHome(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	serveWriteFile(t, dir, chainTomlName, `[Package]
+Name = "scope/mylib"
+Version = "0.1.0"
+`)
+	serveWriteFile(t, dir, "src/init.luau", "return {}")
+	got := loadConfig()
+	want := append(defaultConfig().Roots, RootMapping{Dir: "src", Target: "ReplicatedStorage.packages.mylib", Package: true})
+	if !slices.Equal(got.Roots, want) {
+		t.Errorf("roots =\n  %+v\nwant\n  %+v", got.Roots, want)
+	}
+
+	target, base, rest, boot, ok := mapPath(got, "src/util/x.luau")
+	if !ok || boot || target != "ReplicatedStorage.packages" || !slices.Equal(base, []string{"mylib"}) || rest != "util/x.luau" {
+		t.Errorf("src file: got (%q, %v, %q, %v, %v)", target, base, rest, boot, ok)
+	}
+	c := classify(got, "src/init.luau", false)
+	if !c.IsInit || c.Target != "ReplicatedStorage.packages" || !slices.Equal(c.InstancePath, []string{"mylib"}) {
+		t.Errorf("src init: %+v", c)
+	}
+	if _, _, _, _, ok := mapPath(got, "src2/x.luau"); ok {
+		t.Error("src2 must not match the package root")
+	}
+}
+
+func TestLoadConfigPackageSrcExistingRoot(t *testing.T) {
+	serveFakeHome(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	serveWriteFile(t, dir, chainTomlName, "[Package]\nName = \"mylib\"\n")
+	serveWriteFile(t, dir, "src/init.luau", "return {}")
+	for _, d := range []string{"src", "src/", "./src", "src/lib", "."} {
+		roots := []RootMapping{{Dir: d, Target: "ReplicatedStorage"}}
+		data, _ := json.Marshal(map[string]any{"roots": roots})
+		serveWriteFile(t, dir, configFileName, string(data))
+		if got := loadConfig(); !slices.Equal(got.Roots, roots) {
+			t.Errorf("explicit root %q must win, got %+v", d, got.Roots)
+		}
+	}
+}
+
+func TestLoadConfigPackageSrcSkipped(t *testing.T) {
+	home := serveFakeHome(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join(home, ".chainlink", "packages", "other_signal", "1.0.0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, toml string }{
+		{"no init.luau", "[Package]\nName = \"mygame\"\n"},
+		{"dotted name", "[Package]\nName = \"my.game\"\n"},
+		{"dependency on same target", "[Package]\nName = \"me/signal\"\n\n[Packages]\nsignal = \"other/signal@1.0.0\"\n"},
+	} {
+		os.RemoveAll(filepath.Join(dir, "src"))
+		if tc.name != "no init.luau" {
+			serveWriteFile(t, dir, "src/init.luau", "return {}")
+		} else {
+			serveWriteFile(t, dir, "src/tool.luau", "return {}")
+		}
+		serveWriteFile(t, dir, chainTomlName, tc.toml)
+		if got := loadConfig(); !slices.Equal(got.Roots, defaultConfig().Roots) {
+			t.Errorf("%s: src/ must not be mapped, got %+v", tc.name, got.Roots)
+		}
+	}
+}
+
+func TestLoadConfigPackageRootJSON(t *testing.T) {
+	serveFakeHome(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	serveWriteFile(t, dir, configFileName, `{"roots": [
+		{"dir": "lib", "target": "ReplicatedStorage.lib", "package": true},
+		{"dir": "top", "target": "Workspace", "package": true}
+	]}`)
+	got := loadConfig()
+	want := []RootMapping{
+		{Dir: "lib", Target: "ReplicatedStorage.lib", Package: true},
+		{Dir: "top", Target: "Workspace"}, // no parent to hold it, so a plain root
+	}
+	if !slices.Equal(got.Roots, want) {
+		t.Fatalf("roots =\n  %+v\nwant\n  %+v", got.Roots, want)
+	}
+	if c := classify(got, "lib/init.luau", false); !c.IsInit || c.Target != "ReplicatedStorage" || !slices.Equal(c.InstancePath, []string{"lib"}) {
+		t.Errorf("lib init: %+v", c)
+	}
+}
+
+func TestLoadConfigDottedDependencySkipped(t *testing.T) {
+	serveFakeHome(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	serveWriteFile(t, dir, chainTomlName, "[Packages]\nbad = \"scope/my.lib@1.0.0\"\ngood = \"scope/signal@1.0.0\"\n")
+	got := loadConfig()
+	if len(got.Packages) != 1 || got.Packages[0].Target != "ReplicatedStorage.packages.signal" {
+		t.Errorf("packages = %+v, want only signal", got.Packages)
+	}
+}
+
 func TestLoadConfigBadToml(t *testing.T) {
 	serveFakeHome(t)
 	dir := t.TempDir()
@@ -787,6 +888,42 @@ func TestResolvePromotesShadowedDuplicate(t *testing.T) {
 	s.resolve("shared/foo.lua")
 	if evs := serveDrain(t, s.queue, &since); len(evs) != 1 || evs[0].Op != "UPDATE" {
 		t.Errorf("update after promotion: %s", serveDescribe(evs))
+	}
+}
+
+// A package root without an init file still gets its Folder in the snapshot.
+func TestSnapshotPackageRootFolder(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Roots = append(cfg.Roots, RootMapping{Dir: "src", Target: "ReplicatedStorage.packages.mylib", Package: true})
+	s := serveNewServer(t, cfg)
+	serveWriteFile(t, s.root, "src/util.luau", "")
+	evs := s.snapshot()
+	if ev, ok := serveFind(evs, "CREATE", "src"); !ok || ev.ClassName != "Folder" || !slices.Equal(ev.InstancePath, []string{"mylib"}) {
+		t.Fatalf("missing package Folder: %s", serveDescribe(evs))
+	}
+
+	serveWriteFile(t, s.root, "src/init.luau", "return {}")
+	if _, ok := serveFind(s.snapshot(), "CREATE", "src"); ok {
+		t.Error("init.luau is the package instance, so no Folder should be sent")
+	}
+}
+
+// Deleting the package root's owning init (init.lua sorts first) lets the other take over.
+func TestResolvePackageRootInitPromotes(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Roots = append(cfg.Roots, RootMapping{Dir: "src", Target: "ReplicatedStorage.packages.mylib", Package: true})
+	s := serveNewServer(t, cfg)
+	serveWriteFile(t, s.root, "src/init.luau", "return 'luau'")
+	serveWriteFile(t, s.root, "src/init.lua", "return 'lua'")
+	s.primeKnown()
+	s.snapshot()
+	_, since, _ := s.queue.Since(0)
+
+	os.Remove(filepath.Join(s.root, "src", "init.lua"))
+	s.resolve("src/init.lua")
+	evs := serveDrain(t, s.queue, &since)
+	if len(evs) != 2 || evs[0].Op != "DELETE" || evs[1].Op != "CREATE" || evs[1].Path != "src/init.luau" {
+		t.Fatalf("events: %s", serveDescribe(evs))
 	}
 }
 
