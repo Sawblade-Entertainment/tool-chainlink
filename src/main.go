@@ -551,7 +551,45 @@ func replaceFileFrom(path string, r io.Reader, perm os.FileMode) (err error) {
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err = os.Rename(tmp.Name(), path); err == nil || runtime.GOOS != "windows" {
+		return err
+	}
+	return replaceExistingFileWindows(tmp.Name(), path)
+}
+
+// replaceExistingFileWindows works around Windows not allowing Rename to
+// replace an existing destination. Move the old file aside first, then move
+// the fully written temporary file into place. If the second move fails, put
+// the old file back so a failed install does not discard the working binary.
+func replaceExistingFileWindows(tmp, path string) error {
+	if _, err := os.Lstat(path); err != nil {
+		return err
+	}
+	backup, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".old-*")
+	if err != nil {
+		return err
+	}
+	backupPath := backup.Name()
+	if err := backup.Close(); err != nil {
+		os.Remove(backupPath)
+		return err
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(path, backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		if restoreErr := os.Rename(backupPath, path); restoreErr != nil {
+			return fmt.Errorf("failed to replace %s: %w (also failed to restore original: %v)", path, err, restoreErr)
+		}
+		return err
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return fmt.Errorf("installed %s but failed to remove backup %s: %w", path, backupPath, err)
+	}
+	return nil
 }
 
 func handleGlobal() error {

@@ -1002,6 +1002,43 @@ func TestToolSymlinkTargetResolvesSelf(t *testing.T) {
 	}
 }
 
+func TestSameSymlinkPath(t *testing.T) {
+	dir := filepath.Join("home", ".chainlink", "bin")
+	tests := []struct {
+		name   string
+		target string
+		link   string
+		want   bool
+	}{
+		{"identical", filepath.Join(dir, "chainlink"), filepath.Join(dir, "chainlink"), true},
+		{"different names", filepath.Join(dir, "chainlink"), filepath.Join(dir, "selene"), false},
+	}
+	if runtime.GOOS == "windows" {
+		tests = append(tests,
+			struct {
+				name, target, link string
+				want               bool
+			}{"exe suffix", filepath.Join(dir, "chainlink.exe"), filepath.Join(dir, "chainlink"), true},
+			struct {
+				name, target, link string
+				want               bool
+			}{"case insensitive", filepath.Join(dir, "ChainLink.exe"), filepath.Join(dir, "chainlink"), true},
+		)
+	} else {
+		tests = append(tests, struct {
+			name, target, link string
+			want               bool
+		}{"different extension", filepath.Join(dir, "chainlink.exe"), filepath.Join(dir, "chainlink"), false})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameSymlinkPath(tt.target, tt.link); got != tt.want {
+				t.Errorf("sameSymlinkPath(%q, %q) = %t, want %t", tt.target, tt.link, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestToolSymlinkTargetPrefersStable(t *testing.T) {
 	home, _ := installTestHome(t)
 	stable := filepath.Join(home, ".chainlink", "bin", chainlinkBinaryName(runtime.GOOS))

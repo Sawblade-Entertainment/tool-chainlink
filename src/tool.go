@@ -472,9 +472,35 @@ func toolSymlinkTarget(home string) (string, error) {
 	return exe, nil
 }
 
+// sameSymlinkPath detects paths that name the same executable. Windows
+// executable lookup treats an extensionless command and its .exe file as the
+// same command, and path comparisons there are case-insensitive.
+func sameSymlinkPath(target, link string) bool {
+	target = filepath.Clean(target)
+	link = filepath.Clean(link)
+	if target == link {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	targetDir, linkDir := filepath.Dir(target), filepath.Dir(link)
+	if !strings.EqualFold(targetDir, linkDir) {
+		return false
+	}
+	base := func(p string) string {
+		name := filepath.Base(p)
+		if strings.EqualFold(filepath.Ext(name), ".exe") {
+			name = name[:len(name)-len(filepath.Ext(name))]
+		}
+		return name
+	}
+	return strings.EqualFold(base(target), base(link))
+}
+
 // ensureSymlink makes link point at target, leaving a correct link untouched.
 func ensureSymlink(target, link string) error {
-	if filepath.Clean(target) == filepath.Clean(link) {
+	if sameSymlinkPath(target, link) {
 		return fmt.Errorf("refusing to replace %s with a link to itself", link)
 	}
 	if current, err := os.Readlink(link); err == nil && current == target {
