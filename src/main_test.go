@@ -899,7 +899,7 @@ func TestInstallBinary(t *testing.T) {
 	cliWriteFile(t, dst, "old binary", 0755)
 
 	// Keep the old file open, as a running `chainlink serve` would.
-	old, err := os.Open(dst)
+	old, err := openLikeRunningBinary(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
