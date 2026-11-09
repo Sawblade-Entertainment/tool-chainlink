@@ -561,10 +561,13 @@ func replaceFileFrom(path string, r io.Reader, perm os.FileMode) (err error) {
 // replace an existing destination. Move the old file aside first, then move
 // the fully written temporary file into place. If the second move fails, put
 // the old file back so a failed install does not discard the working binary.
+// A running executable can be renamed but not deleted, so the backup is
+// removed best-effort and any left behind are swept up on the next replace.
 func replaceExistingFileWindows(tmp, path string) error {
 	if _, err := os.Lstat(path); err != nil {
 		return err
 	}
+	removeStaleBackups(path)
 	backup, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".old-*")
 	if err != nil {
 		return err
@@ -586,10 +589,24 @@ func replaceExistingFileWindows(tmp, path string) error {
 		}
 		return err
 	}
-	if err := os.Remove(backupPath); err != nil {
-		return fmt.Errorf("installed %s but failed to remove backup %s: %w", path, backupPath, err)
-	}
+	os.Remove(backupPath)
 	return nil
+}
+
+// removeStaleBackups deletes ".<name>.old-*" files left beside path by earlier
+// replaces whose old file was still in use. Files still locked are skipped.
+func removeStaleBackups(path string) {
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	prefix := "." + filepath.Base(path) + ".old-"
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 func handleGlobal() error {

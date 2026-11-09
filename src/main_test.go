@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -945,6 +946,36 @@ func TestInstallBinary(t *testing.T) {
 
 	if err := installBinary(filepath.Join(dir, "nope"), dst); err == nil {
 		t.Fatal("expected error for missing source")
+	}
+}
+
+func TestReplaceExistingFileWindowsSweepsBackups(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "chainlink.exe")
+	tmp := filepath.Join(dir, ".chainlink.exe.tmp-1")
+	stale := filepath.Join(dir, ".chainlink.exe.old-123")
+	other := filepath.Join(dir, ".other.exe.old-123")
+	cliWriteFile(t, dst, "old binary", 0755)
+	cliWriteFile(t, tmp, "new binary", 0755)
+	cliWriteFile(t, stale, "older binary", 0755)
+	cliWriteFile(t, other, "unrelated", 0755)
+
+	if err := replaceExistingFileWindows(tmp, dst); err != nil {
+		t.Fatal(err)
+	}
+	if got := cliReadFile(t, dst); got != "new binary" {
+		t.Fatalf("dst = %q", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if want := []string{".other.exe.old-123", "chainlink.exe"}; !slices.Equal(names, want) {
+		t.Fatalf("dir = %v, want %v", names, want)
 	}
 }
 
