@@ -20,7 +20,7 @@ Every module loaded by the bootstrapper can implement a set of lifecycle methods
 | Method | Timing | Description |
 | :--- | :--- | :--- |
 | `:draw(dt)` | **Per-Frame** | Called every `RunService.RenderStepped` (before each frame renders). |
-| `:input(pressed, input)` | **Event-Driven** | Called on `UserInputService` events. |
+| `:input(input, gameProcessed, phase)` | **Event-Driven** | Called on `UserInputService.InputBegan`, `InputEnded` and `InputChanged`. `phase` is `"began"`, `"ended"` or `"changed"`. |
 
 ### Server-Only Lifecycle
 
@@ -57,8 +57,8 @@ function mod:start()
     print("PlayerController started!")
 end
 
-function mod:input(pressed: boolean, input: InputObject)
-    if input.KeyCode == Enum.KeyCode.E and pressed then
+function mod:input(input: InputObject, gameProcessed: boolean, phase: string)
+    if input.KeyCode == Enum.KeyCode.E and phase == "began" and not gameProcessed then
         print("Interact key pressed!")
     end
 end
