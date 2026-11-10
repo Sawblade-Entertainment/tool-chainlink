@@ -20,7 +20,7 @@ ChainLink uses a `chain.toml` file in your project root to track dependencies.
 
 ```bash
 # Initialize a new ChainLink project
-# Creates chain.toml and a basic project structure (client/, server/, shared/)
+# Creates chain.toml and a basic project structure (client/, server/, shared/, prefab/, assets/)
 chainlink init
 
 # Install all tools and packages defined in chain.toml
@@ -51,6 +51,15 @@ chainlink login
 # Publish the current project as a package to a registry
 chainlink publish
 
+# Save a Roblox Open Cloud API key (used by assets and publish-place)
+chainlink login-cloud
+
+# Upload new or changed files in assets/ to Roblox (see [Roblox] below)
+chainlink assets
+
+# Publish a place file to Roblox, or build this project and publish it
+chainlink publish-place [game.rbxl]
+
 # Show help
 chainlink help
 ```
@@ -72,7 +81,13 @@ The `chain.toml` file is structured as follows:
 
 [Packages]
   razorinput = "vibeonline/razorinput@0.1.4"
+
+[Roblox]
+  PlaceId = 1234567890   # place that publish-place uploads to
+  UserId = 12345         # owner of uploaded assets (or GroupId = ...)
 ```
+
+`chainlink assets` and `chainlink publish-place` use a Roblox Open Cloud API key, saved with `chainlink login-cloud`. The `ROBLOX_API_KEY` environment variable or an `--api-key` flag overrides it.
 
 ## Tool Proxying
 

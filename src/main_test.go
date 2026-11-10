@@ -1258,15 +1258,19 @@ func TestHandleInitWritesTemplate(t *testing.T) {
 	}
 	want := map[string]string{
 		"client/ExampleController.luau": "function mod:init()",
-		"server/ExampleService.luau":    "function mod:init()",
+		"server/ExampleService.luau":    `asset "spawn.png"`,
+		"prefab/Office.rbxmx":           `<Item class="SpawnLocation"`,
 		"shared/ExampleData.json":       `"hello": "world"`,
 		".vscode/settings.json":         `"luau-lsp.sourcemap.rojoPath": "chainlink"`,
-		".vscode/globals.d.luau":        "declare use: (module: any) -> any",
+		".vscode/globals.d.luau":        "declare asset: (path: string) -> string",
 	}
 	for rel, snippet := range want {
 		if got := cliReadFile(t, filepath.Join(dir, filepath.FromSlash(rel))); !strings.Contains(got, snippet) {
 			t.Errorf("%s = %q, want it to contain %q", rel, got, snippet)
 		}
+	}
+	if png := cliReadFile(t, filepath.Join(dir, "assets", "spawn.png")); !strings.HasPrefix(png, "\x89PNG\r\n\x1a\n") {
+		t.Errorf("assets/spawn.png is not an intact PNG (%d bytes)", len(png))
 	}
 	var settings map[string]any
 	if err := json.Unmarshal([]byte(cliReadFile(t, filepath.Join(dir, ".vscode", "settings.json"))), &settings); err != nil {

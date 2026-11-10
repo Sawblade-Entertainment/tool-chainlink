@@ -35,12 +35,15 @@ var (
 	useGlobal string
 	//go:embed templates/globals/new.luau
 	newGlobal string
+	//go:embed templates/globals/asset.luau
+	assetGlobal string
 )
 
 // InjectGlobals is ordered so the generated prelude is deterministic.
 var InjectGlobals = []injectedGlobal{
 	{"use", useGlobal},
 	{"new", newGlobal},
+	{"asset", assetGlobal},
 }
 
 func NewBuilder(cfg ProjectConfig, root string) *Builder {
@@ -188,6 +191,32 @@ func (b *Builder) syncBootstrap() {
 	}
 }
 
+// syncAssetLock adds the ReplicatedStorage.assets module generated from
+// assets.lock.json, when `chainlink assets` has written one.
+func (b *Builder) syncAssetLock() {
+	path := filepath.Join(b.root, assetLockName)
+	if !fileExists(path) {
+		return
+	}
+	var source string
+	if !b.namesOnly {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			b.readFailed(path, err)
+			return
+		}
+		if source, err = assetModuleSource(data); err != nil {
+			b.readFailed(path, err)
+			return
+		}
+	}
+	inst := b.place("ReplicatedStorage", []string{assetModuleName}, "ModuleScript")
+	inst.FilePath = b.sourcePath(path)
+	if !b.namesOnly {
+		setSource(inst, source)
+	}
+}
+
 // populatePlace builds the full place tree: services, bootstrap, roots and packages.
 func (b *Builder) populatePlace() {
 	for _, s := range []string{"Workspace", "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPlayer"} {
@@ -196,6 +225,7 @@ func (b *Builder) populatePlace() {
 	b.resolveTarget("StarterPlayer.StarterPlayerScripts")
 
 	b.syncBootstrap()
+	b.syncAssetLock()
 
 	for _, r := range b.cfg.Roots {
 		absDir := filepath.Join(b.root, r.Dir)

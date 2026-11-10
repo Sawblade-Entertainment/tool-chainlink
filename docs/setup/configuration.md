@@ -37,6 +37,27 @@ Example: `razorinput = "vibeonline/razorinput@0.1.0"`
 
 Each package syncs to `ReplicatedStorage.packages.<name>`, using the last part of `scope/name`. A package whose name contains a `.` is skipped with a warning, because Roblox paths use `.` as the separator.
 
+### `[Roblox]` Section
+IDs used by the commands that talk to Roblox Open Cloud.
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `PlaceId` | Integer | The place `chainlink publish-place` uploads to. `--place` overrides it. |
+| `UserId` | Integer | The user who owns assets uploaded by `chainlink assets`. |
+| `GroupId` | Integer | The group that owns uploaded assets. Takes precedence over `UserId`. |
+
+```toml
+[Roblox]
+  PlaceId = 1234567890
+  GroupId = 987654
+```
+
+## Asset Lock File
+
+`chainlink assets` records every uploaded file in `assets.lock.json`, mapping its path under `assets/` to its asset ID and a hash of its content. A file is uploaded again only when its content changes, and entries for deleted files are dropped. Commit this file so everyone on the project shares the same IDs.
+
+`serve`, `build` and `sourcemap` turn it into `ReplicatedStorage.assets`, a ModuleScript mapping each path to `"rbxassetid://<id>"`, which the `asset` macro reads.
+
 ## Authentication Store
 
 ChainLink stores API tokens for various registries in a file located at `~/.chainlink/auth.toml`.
@@ -49,4 +70,27 @@ The `auth.toml` file is a simple TOML file with a `[tokens]` map:
 ```toml
 [tokens]
 "https://api.wally.run" = "your-api-token-here"
+"https://apis.roblox.com/" = "your-open-cloud-api-key"
 ```
+
+### Roblox Open Cloud
+`chainlink assets` and `chainlink publish-place` need an [Open Cloud API key](https://create.roblox.com/dashboard/credentials) set up with:
+
+| Setting | Value |
+| :--- | :--- |
+| Access permissions | **Assets** API with Read and Write (`asset:read`, `asset:write`) |
+| Experiences | The experience `publish-place` uploads to (`[Roblox] PlaceId`) |
+| Owner | Create the key under the group if assets use `[Roblox] GroupId` |
+| Accepted IP addresses | Your IP, or `0.0.0.0/0` to allow any (e.g. for CI) |
+
+`chainlink login-cloud` prints this list too. Save the key once with:
+```bash
+chainlink login-cloud                  # prompts for the key
+chainlink login-cloud --api-key <key>  # non-interactive
+```
+
+The key is taken from, in order:
+
+1. the `--api-key` flag,
+2. the `ROBLOX_API_KEY` environment variable (handy in CI),
+3. `auth.toml`, saved by `chainlink login-cloud`.

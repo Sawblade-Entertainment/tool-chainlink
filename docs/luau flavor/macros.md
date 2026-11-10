@@ -31,3 +31,17 @@ A shorthand for creating new Roblox instances.
 ```lua
 local part = new "Part" -- Equivalent to Instance.new("Part")
 ```
+
+### `asset "path"`
+Returns the content ID of a file in the project's `assets/` directory that `chainlink assets` has uploaded.
+
+**Behavior:**
+- `path` is the file's path under `assets/`, with forward slashes and its extension.
+- Looks the path up in `ReplicatedStorage.assets`, a ModuleScript that `serve` and `build` generate from `assets.lock.json`.
+- Errors if the file has not been uploaded yet.
+
+**Example:**
+```lua
+local icon = asset "ui/icon.png" -- "rbxassetid://123456789"
+sound.SoundId = asset "sfx/hit.ogg"
+```

@@ -930,6 +930,67 @@ func TestHandleBuildModelWithoutSrc(t *testing.T) {
 	}
 }
 
+// The init template must build: the office prefab decodes with its logos,
+// sign and spawn, and the starter service gets the use and asset macros.
+func TestInitTemplateBuilds(t *testing.T) {
+	buildHermeticHome(t)
+	root := t.TempDir()
+	if err := writeInitTemplate(root); err != nil {
+		t.Fatal(err)
+	}
+	b := NewBuilder(defaultConfig(), root)
+	b.populatePlace()
+	if b.readErrs != 0 {
+		t.Fatalf("readErrs = %d", b.readErrs)
+	}
+
+	office := buildFind(t, b.top, "ServerStorage", "Office")
+	if office.Class != "Model" {
+		t.Errorf("Office class = %s", office.Class)
+	}
+	if ref, _ := office.prop("PrimaryPart").(Ref); ref.Target == nil || ref.Target.Name != "Ground" {
+		t.Errorf("PrimaryPart = %v", office.prop("PrimaryPart"))
+	}
+	spawn := buildFind(t, office.Children, "Plaza", "SpawnLocation")
+	if spawn.Class != "SpawnLocation" || buildFind(t, spawn.Children, "Logo").prop("Face") != Enum(1) {
+		t.Errorf("spawn = %s with logo face %v, want a SpawnLocation with a Top logo", spawn.Class, buildFind(t, spawn.Children, "Logo").prop("Face"))
+	}
+	sign := buildFind(t, office.Children, "Signage", "Canopy", "Sign", "Text")
+	if text, _ := sign.prop("Text").(String); text != "SAWBLADE ENTERTAINMENT" {
+		t.Errorf("canopy sign = %q", text)
+	}
+	logos, parts := 0, 0
+	walk(office, func(inst *Instance) {
+		switch inst.Class {
+		case "Decal":
+			if inst.Name == "Logo" {
+				logos++
+			}
+		case "Part", "SpawnLocation":
+			parts++
+			if inst.prop("Anchored") != Bool(true) {
+				t.Errorf("%s is not anchored", inst.Name)
+			}
+		}
+	})
+	if logos != 4 {
+		t.Errorf("found %d Logo decals, want 4 (spawn, roof, lobby, desk)", logos)
+	}
+	if parts < 100 {
+		t.Errorf("office has only %d parts", parts)
+	}
+
+	src := buildSource(t, buildFind(t, b.top, "ServerScriptService", "init", "ExampleService"))
+	if !strings.Contains(src, useGlobal) || !strings.Contains(src, assetGlobal) {
+		t.Error("ExampleService is missing the use or asset macro")
+	}
+
+	found, err := scanAssets(filepath.Join(root, assetsDir))
+	if err != nil || len(found) != 1 || found[0].Rel != "spawn.png" || found[0].Kind.Type != "Image" {
+		t.Errorf("template assets = %+v, %v", found, err)
+	}
+}
+
 // --- benchmarks ---
 
 // buildBenchProject lays out a project with many scripts and one large prefab.

@@ -406,6 +406,9 @@ func mapPath(cfg ProjectConfig, rel string) (target string, base []string, rest 
 }
 
 func classify(cfg ProjectConfig, rel string, isDir bool) Classified {
+	if rel == assetLockName && !isDir {
+		return Classified{Target: "ReplicatedStorage", InstancePath: []string{assetModuleName}, ClassName: "ModuleScript", Syncable: true}
+	}
 	target, base, rest, bootstrapped, ok := mapPath(cfg, rel)
 	if !ok {
 		return Classified{}
@@ -587,6 +590,13 @@ func (s *Server) fileEvent(rel string, op string) (Event, bool) {
 	data, err := os.ReadFile(s.absPath(rel))
 	if err != nil {
 		return Event{}, false
+	}
+	if rel == assetLockName {
+		if ev.Source, err = assetModuleSource(data); err != nil {
+			log.Printf("%s %v", logWarn(), err)
+			return Event{}, false
+		}
+		return ev, true
 	}
 	source := string(data)
 	lower := strings.ToLower(rel)
@@ -872,6 +882,9 @@ func (s *Server) snapshot() []Event {
 
 	cfg := s.conf()
 	out := bootstrapEvents(cfg) // depth 1, so they sort before their children
+	if ev, ok := s.fileEvent(assetLockName, "CREATE"); ok && s.claim(ev) {
+		out = append(out, ev)
+	}
 	for _, r := range cfg.Roots {
 		absDir := filepath.Join(s.root, r.Dir)
 		if !s.walkFiles(absDir, &out) && r.Package && dirExists(absDir) {
@@ -1283,6 +1296,11 @@ func (s *Server) primeDir(absDir string) {
 }
 
 func (s *Server) primeKnown() {
+	if fileExists(s.absPath(assetLockName)) {
+		s.mu.Lock()
+		s.known[assetLockName] = false
+		s.mu.Unlock()
+	}
 	for _, r := range s.conf().Roots {
 		s.primeDir(filepath.Join(s.root, r.Dir))
 	}

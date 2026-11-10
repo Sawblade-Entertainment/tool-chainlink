@@ -146,9 +146,21 @@ func main() {
 		if err := handleLogin(os.Args[2:]); err != nil {
 			fail("logging in", err)
 		}
+	case "login-cloud":
+		if err := handleLoginCloud(os.Args[2:]); err != nil {
+			fail("logging in to Open Cloud", err)
+		}
 	case "publish":
 		if err := handlePublish(os.Args[2:]); err != nil {
 			fail("publishing", err)
+		}
+	case "publish-place":
+		if err := handlePublishPlace(os.Args[2:]); err != nil {
+			fail("publishing place", err)
+		}
+	case "assets":
+		if err := handleAssets(os.Args[2:]); err != nil {
+			fail("syncing assets", err)
 		}
 	case "serve":
 		if err := serve(); err != nil {
@@ -192,14 +204,17 @@ func sourcemapOutput(args []string) string {
 
 // usageCommands is the command list shown by "chainlink help".
 var usageCommands = [][2]string{
-	{"init", "Create chain.toml and a starter project (client/, server/, shared/)"},
+	{"init", "Create chain.toml and a starter project (client/, server/, shared/, prefab/, assets/)"},
 	{"install [-y]", "Install the tools and packages in chain.toml (-y: don't ask)"},
 	{"add <spec> [--tool|--package]", "Add a tool (owner/repo@tag) or package (scope/name@version)"},
 	{"remove <name>", "Remove a tool or package from chain.toml"},
 	{"serve", "Start the live-sync server for the Studio plugin"},
 	{"build <output>", "Build a place (.rbxl/.rbxlx) or src/ as a model (.rbxm/.rbxmx)"},
 	{"login", "Authenticate with a package registry"},
+	{"login-cloud [--api-key <key>]", "Save a Roblox Open Cloud API key for assets and publish-place"},
 	{"publish", "Publish this project as a package"},
+	{"publish-place [file] [--draft]", "Publish a place file (or a build of this project) to Roblox"},
+	{"assets [--dry-run]", "Upload new or changed files in assets/ to Roblox"},
 	{"self-install", "Install chainlink to ~/.chainlink/bin, add it to PATH, and install the Studio plugin"},
 	{"help", "Show this help"},
 }
@@ -866,32 +881,41 @@ func handleLogin(args []string) error {
 
 func promptAPIKey(api string) error {
 	fmt.Printf("The package registry requires an API key to publish to %s.\n", bold(api))
-	fmt.Printf("%s %s ", paint(colorOut, "?", sgrBold, sgrCyan), bold("Enter an API key:"))
-
-	var key string
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		b, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println()
-		if err != nil {
-			return fmt.Errorf("failed to read API key: %w", err)
-		}
-		key = string(b)
-	} else {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("failed to read API key: %w", err)
-		}
-		key = line
-	}
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return errors.New("API key cannot be empty")
+	key, err := readAPIKey("Enter an API key:")
+	if err != nil {
+		return err
 	}
 	if err := setToken(api, key); err != nil {
 		return err
 	}
 	status("Saved", sgrGreen, "API key for %s", api)
 	return nil
+}
+
+// readAPIKey prompts for a key on stdin, hiding it when stdin is a terminal.
+func readAPIKey(prompt string) (string, error) {
+	fmt.Printf("%s %s ", paint(colorOut, "?", sgrBold, sgrCyan), bold(prompt))
+
+	var key string
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return "", fmt.Errorf("failed to read API key: %w", err)
+		}
+		key = string(b)
+	} else {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", fmt.Errorf("failed to read API key: %w", err)
+		}
+		key = line
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", errors.New("API key cannot be empty")
+	}
+	return key, nil
 }
 
 type deviceCodeResponse struct {
