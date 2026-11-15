@@ -42,6 +42,9 @@ chainlink remove name
 # Start the ChainLink server
 chainlink serve
 
+# Open a dashboard of your setup and this project in the browser
+chainlink ui
+
 # Install ChainLink globally to your system
 chainlink self-install
 

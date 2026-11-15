@@ -86,3 +86,26 @@ Start the ChainLink server for integrated development:
 ```bash
 chainlink serve
 ```
+
+### Dashboard
+Open a dashboard of your setup and the current project in your browser:
+```bash
+chainlink ui
+```
+It shows whether ChainLink, your `PATH` and the Studio plugin are set up, whether an Open Cloud key is saved, and, from a project folder, the tools and packages in `chain.toml`, whether live sync is running, and which files in `assets/` still need uploading. The page refreshes itself while it is open.
+
+Where something is missing, a button runs the command that fixes it, and its output streams into a panel at the bottom of the page:
+
+| Button | Runs |
+| --- | --- |
+| Install / Add to PATH / Install plugin | `chainlink self-install` |
+| Save (Open Cloud API key) | `chainlink login-cloud`, with the key passed on stdin |
+| Start / Stop (live sync) | `chainlink serve` |
+| Install (dependencies) | `chainlink install -y` |
+| Upload (assets) | `chainlink assets`, after asking you to confirm |
+| Create a project here | `chainlink init`, after asking you to confirm |
+| Update | `chainlink update` |
+
+One command runs at a time, except live sync, which keeps running alongside the others until you stop it. Press Ctrl+C in the terminal to stop the dashboard; it also stops anything it started.
+
+The dashboard only listens on `127.0.0.1`, refuses requests from other websites, and the link it opens carries a token that changes every run. Use `--no-open` to print the link instead of opening a browser, and `--port <n>` to pick the port.

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChainLink</title>
+  <link rel="icon" href="chainlink.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <img src="chainlink.svg" alt="" width="28" height="28">
+      <span>ChainLink</span>
+      <span class="muted" id="version"></span>
+    </div>
+    <div class="bar-right">
+      <span class="muted small" id="updated"></span>
+      <button type="button" id="show-output" hidden>Output</button>
+      <button type="button" id="refresh">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="banner warn" id="banner" hidden></div>
+    <div class="banner info" id="update" hidden></div>
+
+    <section>
+      <h2>Setup</h2>
+      <p class="muted small">Installed once per machine.</p>
+      <ul class="checks" id="setup"></ul>
+    </section>
+
+    <section id="project-section">
+      <h2>Project</h2>
+      <div id="project"></div>
+    </section>
+  </main>
+
+  <aside class="drawer" id="drawer" aria-label="Command output" hidden>
+    <div class="drawer-head">
+      <div class="tabs" id="job-tabs"></div>
+      <div class="drawer-buttons">
+        <button type="button" id="job-stop" hidden>Stop</button>
+        <button type="button" id="job-close" aria-label="Close output">Close</button>
+      </div>
+    </div>
+    <div class="job-status small" id="job-status"></div>
+    <pre class="output" id="output"></pre>
+  </aside>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

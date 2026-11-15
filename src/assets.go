@@ -110,6 +110,16 @@ type localAsset struct {
 // scanAssets finds every uploadable file under dir. Hidden files are skipped
 // quietly; other unsupported files get a warning.
 func scanAssets(dir string) ([]localAsset, error) {
+	return walkAssets(dir, func(rel string) {
+		warnf("skipping %s/%s (not a type Roblox accepts)", assetsDir, rel)
+	}, func(p string, _ fs.DirEntry) (string, error) {
+		return hashFile(p)
+	})
+}
+
+// walkAssets is scanAssets with the reporting and hashing left to the caller:
+// skipped gets each unsupported file, and hash returns a file's sha256.
+func walkAssets(dir string, skipped func(rel string), hash func(p string, d fs.DirEntry) (string, error)) ([]localAsset, error) {
 	var found []localAsset
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -128,14 +138,14 @@ func scanAssets(dir string) ([]localAsset, error) {
 		rel = filepath.ToSlash(rel)
 		kind, ok := assetKinds[strings.ToLower(filepath.Ext(p))]
 		if !ok {
-			warnf("skipping %s/%s (not a type Roblox accepts)", assetsDir, rel)
+			skipped(rel)
 			return nil
 		}
-		hash, err := hashFile(p)
+		sum, err := hash(p, d)
 		if err != nil {
 			return err
 		}
-		found = append(found, localAsset{Rel: rel, Path: p, Kind: kind, Hash: hash})
+		found = append(found, localAsset{Rel: rel, Path: p, Kind: kind, Hash: sum})
 		return nil
 	})
 	return found, err
