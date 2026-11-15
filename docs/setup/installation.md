@@ -40,3 +40,15 @@ This command will:
 4. Install the ChainLink plugin into Roblox Studio's plugins folder.
 
 After running this, restart your terminal or run `source ~/.zshrc` (or the equivalent for your shell) to start using `chainlink` from anywhere.
+
+## Updating
+
+ChainLink checks GitHub for a newer release at most once a day and, when one is out, prints a notice after the command you ran. To update:
+
+```bash
+chainlink update
+```
+
+This downloads the latest release for your platform into `~/.chainlink/bin` and refreshes the Studio plugin. Use `chainlink update --check` to only see whether an update is available, and `chainlink version` to see what you're running.
+
+The check is skipped in CI, when output isn't a terminal, and for builds made from source. Set `CHAINLINK_NO_UPDATE_CHECK=1` to turn it off.

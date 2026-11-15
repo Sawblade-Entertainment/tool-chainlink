@@ -26,7 +26,8 @@ import (
 )
 
 type GitHubRelease struct {
-	Assets []GitHubAsset `json:"assets"`
+	TagName string        `json:"tag_name"`
+	Assets  []GitHubAsset `json:"assets"`
 }
 
 type GitHubAsset struct {
@@ -258,6 +259,12 @@ func fetchRelease(repo, tag string) (*GitHubRelease, string, error) {
 
 func getRelease(repo, tag string) (*GitHubRelease, int, error) {
 	apiURL := fmt.Sprintf("%s/repos/%s/releases/tags/%s", githubAPIBase, repo, url.PathEscape(tag))
+	return getReleaseFrom(installHTTPClient, apiURL)
+}
+
+// getReleaseFrom fetches and decodes one release from a GitHub API URL. It
+// returns the HTTP status so callers can tell a missing release apart.
+func getReleaseFrom(client *http.Client, apiURL string) (*GitHubRelease, int, error) {
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, 0, err
@@ -267,7 +274,7 @@ func getRelease(repo, tag string) (*GitHubRelease, int, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := installHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to fetch release info: %w", err)
 	}

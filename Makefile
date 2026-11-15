@@ -1,7 +1,10 @@
 BINARY := chainlink
 SRC    := src
 BIN    := bin
-LDFLAGS := -s -w
+# Release builds pass VERSION=<tag>; other builds get `git describe` output,
+# which the update check treats as a development build.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X main.chainlinkVersion=$(VERSION)
 
 # os-arch pairs built by `make build`
 PLATFORMS := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64

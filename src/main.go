@@ -113,6 +113,7 @@ func main() {
 	}
 
 	cmd := os.Args[1]
+	updates := beginUpdateCheck(cmd)
 	switch cmd {
 	case "help", "-h", "--help":
 		printUsage()
@@ -163,6 +164,9 @@ func main() {
 			fail("syncing assets", err)
 		}
 	case "serve":
+		// serve runs until interrupted, so show what is already known now.
+		updates.notify(os.Stderr, false)
+		updates = nil
 		if err := serve(); err != nil {
 			fail("serving", err)
 		}
@@ -181,11 +185,18 @@ func main() {
 		if err := handleGlobal(); err != nil {
 			fail("installing globally", err)
 		}
+	case "update":
+		if err := handleUpdate(os.Args[2:]); err != nil {
+			fail("updating", err)
+		}
+	case "version", "--version":
+		handleVersion()
 	default:
 		fmt.Fprintf(os.Stderr, "%s unknown command %q\n\n", paint(colorStderr, "error:", sgrBold, sgrRed), cmd)
 		printUsage()
 		os.Exit(2)
 	}
+	updates.notify(os.Stderr, true)
 }
 
 // sourcemapOutput returns the -o/--output path. luau-lsp's rojoPath integration
@@ -216,6 +227,8 @@ var usageCommands = [][2]string{
 	{"publish-place [file] [--draft]", "Publish a place file (or a build of this project) to Roblox"},
 	{"assets [--dry-run]", "Upload new or changed files in assets/ to Roblox"},
 	{"self-install", "Install chainlink to ~/.chainlink/bin, add it to PATH, and install the Studio plugin"},
+	{"update [--check]", "Update chainlink to the latest release from GitHub"},
+	{"version", "Show the chainlink version"},
 	{"help", "Show this help"},
 }
 

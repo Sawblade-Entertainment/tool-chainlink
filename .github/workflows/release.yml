@@ -27,7 +27,7 @@ jobs:
 
       # Tests already passed in the test job; build only.
       - name: Build
-        run: make build
+        run: make build VERSION=${{ github.ref_name }}
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
