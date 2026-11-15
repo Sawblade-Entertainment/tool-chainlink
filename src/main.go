@@ -170,6 +170,13 @@ func main() {
 		if err := serve(); err != nil {
 			fail("serving", err)
 		}
+	case "ui":
+		// ui runs until interrupted, so show what is already known now.
+		updates.notify(os.Stderr, false)
+		updates = nil
+		if err := handleUI(os.Args[2:]); err != nil {
+			fail("running the UI", err)
+		}
 	case "build":
 		if len(os.Args) < 3 {
 			usageFail("chainlink build <output.rbxl|.rbxlx|.rbxm|.rbxmx>")
@@ -220,6 +227,7 @@ var usageCommands = [][2]string{
 	{"add <spec> [--tool|--package]", "Add a tool (owner/repo@tag) or package (scope/name@version)"},
 	{"remove <name>", "Remove a tool or package from chain.toml"},
 	{"serve", "Start the live-sync server for the Studio plugin"},
+	{"ui [--port <n>] [--no-open]", "Open a dashboard in the browser to check and fix your setup and run project commands"},
 	{"build <output>", "Build a place (.rbxl/.rbxlx) or src/ as a model (.rbxm/.rbxmx)"},
 	{"login", "Authenticate with a package registry"},
 	{"login-cloud [--api-key <key>]", "Save a Roblox Open Cloud API key for assets and publish-place"},
